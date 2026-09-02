@@ -14,4 +14,7 @@ def call_agent(messages: list[dict], system_prompt: str) -> str:
         system=system_prompt,
         messages=messages,
     )
-    return response.content[0].text
+    for block in response.content:
+        if block.type == "text":
+            return block.text
+    raise ValueError("Claude response contained no text block")
