@@ -1,10 +1,31 @@
+import json
 import operator
 from typing import Annotated, TypedDict
 
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import StateGraph
+from langgraph.graph import END, StateGraph
 
-from coach_agent.agent import call_agent
+from coach_agent.agent import call_agent, extract_text
+from coach_agent.nutrition import search_by_barcode, search_by_name
+
+_NUTRITION_TOOL = {
+    "name": "lookup_food",
+    "description": (
+        "מחפש ערכים תזונתיים (קלוריות, חלבון, פחמימות, שומן ל-100 גרם) של מוצר מזון "
+        "דרך USDA FoodData Central — לפי שם (query) או לפי ברקוד (barcode). "
+        "כשמחפשים לפי שם למזון גנרי/לא-ממותג, לנסח את query בסגנון התיאורים של "
+        "USDA (למשל 'banana, raw' ולא סתם 'banana') לתוצאות מדויקות יותר."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "שם המוצר לחיפוש, למשל 'banana, raw'"},
+            "barcode": {"type": "string", "description": "מספר ברקוד (UPC/EAN) של המוצר"},
+        },
+    },
+}
+
+_TOOLS = [_NUTRITION_TOOL]
 
 
 class GraphState(TypedDict):
@@ -14,14 +35,44 @@ class GraphState(TypedDict):
 
 
 def _call_llm(state: GraphState) -> GraphState:
-    response = call_agent(state["messages"], state["system_prompt"])
-    return {"messages": [{"role": "assistant", "content": response}], "response": response}
+    message = call_agent(state["messages"], state["system_prompt"], tools=_TOOLS)
+    content = [block.model_dump() for block in message.content]
+    update: GraphState = {"messages": [{"role": "assistant", "content": content}]}
+    if message.stop_reason != "tool_use":
+        update["response"] = extract_text(message)
+    return update
+
+
+def _run_tool(state: GraphState) -> GraphState:
+    last_message = state["messages"][-1]
+    tool_results = []
+    for block in last_message["content"]:
+        if block.get("type") != "tool_use":
+            continue
+        if block["input"].get("barcode"):
+            result = search_by_barcode(block["input"]["barcode"])
+        else:
+            result = search_by_name(block["input"].get("query", ""))
+        content = json.dumps(result, ensure_ascii=False) if result else "לא נמצא מוצר מתאים."
+        tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": content})
+    return {"messages": [{"role": "user", "content": tool_results}]}
+
+
+def _route_after_llm(state: GraphState) -> str:
+    last_message = state["messages"][-1]
+    if last_message["role"] == "assistant":
+        for block in last_message["content"]:
+            if block.get("type") == "tool_use":
+                return "run_tool"
+    return END
 
 
 _graph_builder = StateGraph(GraphState)
 _graph_builder.add_node("call_llm", _call_llm)
+_graph_builder.add_node("run_tool", _run_tool)
 _graph_builder.set_entry_point("call_llm")
-_graph_builder.set_finish_point("call_llm")
+_graph_builder.add_conditional_edges("call_llm", _route_after_llm, {"run_tool": "run_tool", END: END})
+_graph_builder.add_edge("run_tool", "call_llm")
 graph = _graph_builder.compile(checkpointer=MemorySaver())
 
 
