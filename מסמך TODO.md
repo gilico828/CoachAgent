@@ -19,18 +19,16 @@
 - [x] Telegram skeleton — בוט שמקבל הודעה ומחזיר echo (בלי LLM), לוודא שהחיבור עובד.
 - [x] Claude API wrapper — פונקציה `call_agent(messages, system_prompt) -> reply`, נבדקת בנפרד מטלגרם.
 - [x] LangGraph graph בסיסי — הקמת graph פשוט (node אחד לפי שלב: assemble prompt → קריאה ל-LLM → תשובה) שעוטף את `call_agent`, כבסיס להרחבה עתידית (tools, ענפים מותנים) ב-Phase 2 ואילך.
-- [ ] חיבור ל-LangSmith — הפעלת tracing על ה-LangGraph graph (משתני סביבה `LANGCHAIN_TRACING_V2`/`LANGCHAIN_API_KEY`), כדי לראות בפועל את זרימת ה-nodes, הפרומפטים והתשובות של כל אינטראקציה.
+- [x] חיבור ל-LangSmith — הפעלת tracing על ה-LangGraph graph (משתני סביבה `LANGCHAIN_TRACING_V2`/`LANGCHAIN_API_KEY`), כדי לראות בפועל את זרימת ה-nodes, הפרומפטים והתשובות של כל אינטראקציה.
 - [x] קובץ `general_instructions.md` — מסמך הוראות כללי (אישיות, כללי עבודה, גבולות, סגנון אימון).
 - [x] קובץ הוראות פר-משתמש — `users/{user_id}.md` (מטרות, מגבלות, היסטוריה בסיסית). (Phase 1: משתמש יחיד, קובץ קבוע `users/gili.md`; מעבר ל-ID דינמי כשתהיה תמיכה ברב-משתמשים.)
 - [x] הרכבת prompt — מיזוג general + user לכדי system prompt אחד.
-- [ ] זיכרון שיחה קצר-טווח — `dict[user_id] -> list[messages]` בזיכרון (לא persistent, נעלם בריסטארט — מקובל לשלב זה).
-- [ ] חיבור מלא — הודעה נכנסת מטלגרם → prompt assembly → Claude → תשובה → טלגרם.
-- [ ] בדיקה ידנית — שינוי `users/<id>.md` ווידוא שהתגובה משתנה בהתאם.
+- [x] זיכרון שיחה קצר-טווח — `dict[user_id] -> list[messages]` בזיכרון (לא persistent, נעלם בריסטארט — מקובל לשלב זה).
+- [x] חיבור מלא — הודעה נכנסת מטלגרם → prompt assembly → Claude → תשובה → טלגרם.
+- [x] בדיקה ידנית — שינוי `users/<id>.md` ווידוא שהתגובה משתנה בהתאם.
 - [ ] Dockerfile בסיסי — הרצת הבוט (polling) בתוך container במקום ישירות על המחשב; היכרות מוקדמת עם Docker גם אם עדיין אין orchestration אמיתי (זה מגיע ב-Phase 6 עם Kubernetes).
 
 **יציאה מה-Phase (Definition of Done):** אפשר לשוחח עם הסוכן דרך טלגרם, הוא עונה לפי ההוראות הכלליות + הוראות פר-משתמש, זוכר את השיחה הנוכחית, שכבת התזמור בנויה כ-LangGraph graph עם tracing ב-LangSmith, והכל רץ בתוך Docker container.
-
-
 
 ## Phase 2 — חיבור ל-API לבדיקת ערכים תזונתיים
 
@@ -46,6 +44,8 @@
 - [ ] סכמה ליומן (טבלה אחת, `meal_type` כעמודה — ראו [[dividing-food-log-table]]).
 - [ ] Food Log Tool — כתיבה וקריאה.
 - [ ] בדיקה: "אכלתי 2 ביצים" → נרשם; "מה אכלתי היום" → משוחזר מהיומן.
+
+
 
 ## Phase 4 — פריסה לענן (Cloud Deployment)
 
@@ -94,6 +94,8 @@
 - [ ] בחירת מודל לפי משימה — למשל Haiku לשיחה פשוטה מול Sonnet/Opus למשימות מורכבות יותר (ניתוח תזונתי, הכנת מסמך).
 - [ ] מדידת latency — זמן תגובה מקצה לקצה (הודעה נכנסת → תשובה), איתור צוואר הבקבוק (LLM call מול tool calls מול DB).
 - [ ] Dashboard/ניטור בסיסי — ריכוז מדדי עלות/latency/שימוש, למשל דרך LangSmith או לוג מובנה.
+
+
 
 ## Phase 8 — תמיכה ברב-משתתפים (Multi-user)
 
