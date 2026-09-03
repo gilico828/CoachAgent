@@ -26,7 +26,7 @@
 - [x] זיכרון שיחה קצר-טווח — `dict[user_id] -> list[messages]` בזיכרון (לא persistent, נעלם בריסטארט — מקובל לשלב זה).
 - [x] חיבור מלא — הודעה נכנסת מטלגרם → prompt assembly → Claude → תשובה → טלגרם.
 - [x] בדיקה ידנית — שינוי `users/<id>.md` ווידוא שהתגובה משתנה בהתאם.
-- [ ] Dockerfile בסיסי — הרצת הבוט (polling) בתוך container במקום ישירות על המחשב; היכרות מוקדמת עם Docker גם אם עדיין אין orchestration אמיתי (זה מגיע ב-Phase 6 עם Kubernetes).
+- [x] Dockerfile בסיסי — הרצת הבוט (polling) בתוך container במקום ישירות על המחשב; היכרות מוקדמת עם Docker גם אם עדיין אין orchestration אמיתי (זה מגיע ב-Phase 7 עם Kubernetes). כולל `.dockerignore` שמוציא במפורש את `coach_agent/users/*.md` מה-image (נתונים אישיים — מגיעים ב-runtime דרך volume mount, לא build-time).
 
 **יציאה מה-Phase (Definition of Done):** אפשר לשוחח עם הסוכן דרך טלגרם, הוא עונה לפי ההוראות הכלליות + הוראות פר-משתמש, זוכר את השיחה הנוכחית, שכבת התזמור בנויה כ-LangGraph graph עם tracing ב-LangSmith, והכל רץ בתוך Docker container.
 

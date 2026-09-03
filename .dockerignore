@@ -1,0 +1,16 @@
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env.example
+.obsidian/
+.claude/
+מסמך *.md
+Dockerfile
+.dockerignore
+
+# Personal per-user data must never be baked into the image —
+# it's mounted as a volume at runtime instead (see deployment docs).
+coach_agent/users/*.md
