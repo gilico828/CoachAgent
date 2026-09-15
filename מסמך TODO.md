@@ -49,22 +49,26 @@
 
 **החלטות נעולות לשלב הזה:**
 
-- ספק ענן: Oracle Cloud Free Tier — VM ב-Always Free tier (חינם לתמיד, לא trial).
+- ספק ענן: **AWS — EC2 instance**. שים לב: ה-Free Tier של AWS מוגבל בזמן (בניגוד ל-Always Free של Oracle), ואחרי שהוא נגמר המכונה מתחילה לעלות כסף (~5-10$ לחודש). נבחר בכל זאת במודע, מתוך רצון ללמוד את ספק הענן הנפוץ בתעשייה.
 - הרצה: polling נשאר כמו שהוא (לא עוברים ל-webhook) — אין צורך ב-endpoint ציבורי/HTTPS.
-- שיטת פריסה: SSH ל-VM + הרצת ה-container שכבר קיים מ-Phase 1 (`docker run`/`docker compose`), לא CI/CD אוטומטי בשלב הזה.
+- שיטת פריסה: SSH ל-instance + הרצת ה-container שכבר קיים מ-Phase 1 (`docker run`/`docker compose`), לא CI/CD אוטומטי בשלב הזה.
+- ניהול secrets: קובץ `.env` על המכונה + `--env-file`. **לא** Secrets Manager / SSM Parameter Store בשלב הזה (נשקל שוב ב-Phase 7, כשתהיה תשתית אמיתית).
+- ארכיטקטורת מעבד: אם ייבחר instance מסוג Graviton/ARM (`t4g`) — ה-image צריך להיבנות ל-`linux/arm64` (`docker buildx`). ב-instance x86 (`t3`) ה-image הקיים מ-Phase 1 עובד כמו שהוא.
 
 **משימות:**
 
-- [ ] הקמת חשבון Oracle Cloud + פרישת VM ב-Always Free tier (בחירת region/shape זמינים בחינם).
-- [ ] הקשחת VM בסיסית — גישה ב-SSH key, כללי firewall/security list (אין צורך בפורטים נכנסים כי מדובר ב-polling).
-- [ ] התקנת Docker על ה-VM.
-- [ ] העברת secrets ל-VM (`.env` — Telegram token, Anthropic API key, LangSmith key) בצורה מאובטחת, לא דרך git.
-- [ ] פריסת ה-container (מה-Dockerfile של Phase 1) על ה-VM.
-- [ ] מדיניות restart — `--restart unless-stopped` (או systemd service) כדי שהבוט יקום אוטומטית אחרי reboot/crash של ה-VM.
-- [ ] גישה בסיסית ללוגים — איך בודקים `docker logs` מרחוק כשמשהו משתבש.
+- [ ] הקמת חשבון AWS + **הגדרת Budget Alarm לפני כל דבר אחר** — ה-Free Tier נגמר בשקט ו-AWS ממשיך לחייב בלי להתריע.
+- [ ] יצירת Key Pair + הפעלת EC2 instance (בחירת region, AMI, ו-instance type — `t3.micro` / `t4g.micro`).
+- [ ] Security Group — לאפשר SSH נכנס בלבד (רצוי מוגבל ל-IP שלך). אין צורך בפורטים נכנסים נוספים כי מדובר ב-polling.
+- [ ] התקנת Docker על ה-instance.
+- [ ] העברת `.env` ל-instance ב-`scp` (Telegram token, Anthropic API key, LangSmith key) — לא דרך git.
+- [ ] העלאת ה-image ל-instance — build מקומי + push ל-ECR, או build ישירות על ה-instance (להחליט בזמן העבודה). לוודא התאמת architecture.
+- [ ] פריסת ה-container עם `--env-file .env`.
+- [ ] מדיניות restart — `--restart unless-stopped` (או systemd service) כדי שהבוט יקום אוטומטית אחרי reboot/crash של ה-instance.
+- [ ] גישה בסיסית ללוגים — איך בודקים `docker logs` מרחוק דרך SSH כשמשהו משתבש.
 - [ ] בדיקת קבלה — הבוט מגיב בטלגרם לאורך זמן כשהמחשב האישי כבוי לגמרי.
 
-**יציאה מה-Phase (Definition of Done):** הבוט רץ ברציפות על VM ב-Oracle Cloud Free Tier ללא תלות במחשב האישי, שורד restart של ה-VM, ועדיין ללא עלות.
+**יציאה מה-Phase (Definition of Done):** הבוט רץ ברציפות על EC2 instance ב-AWS ללא תלות במחשב האישי, שורד restart של ה-instance, ויש Budget Alarm פעיל שמתריע לפני חיוב לא צפוי.
 
 ## Phase 5 — תמיכה ברב-משתתפים (Multi-user)
 
@@ -91,7 +95,7 @@
 - [ ] בחירת טכנולוגיית ממשק.
 - [ ] שכבת ממשק חדשה שמדברת מול אותו Agent Orchestrator (ללא שינוי בליבה — זו הנקודה של שכבת הממשק המנותקת).
 - [ ] מעבר מ-in-memory/קבצים ל-DB אמיתי אם עוד לא בוצע.
-- [ ] Kubernetes — פריסה/orchestration בסקאלה (multi-user, high availability), כתחליף ל-VM הבודד מ-Phase 2.
+- [ ] Kubernetes — פריסה/orchestration בסקאלה (multi-user, high availability), כתחליף ל-instance הבודד מ-Phase 4.
 
 ## Phase 8 — תפעול ועלות (Cost & Latency Management)
 
