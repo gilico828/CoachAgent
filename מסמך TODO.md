@@ -52,21 +52,23 @@
 - ספק ענן: **AWS — EC2 instance**. שים לב: ה-Free Tier של AWS מוגבל בזמן (בניגוד ל-Always Free של Oracle), ואחרי שהוא נגמר המכונה מתחילה לעלות כסף (~5-10$ לחודש). נבחר בכל זאת במודע, מתוך רצון ללמוד את ספק הענן הנפוץ בתעשייה.
 - הרצה: polling נשאר כמו שהוא (לא עוברים ל-webhook) — אין צורך ב-endpoint ציבורי/HTTPS.
 - שיטת פריסה: SSH ל-instance + הרצת ה-container שכבר קיים מ-Phase 1 (`docker run`/`docker compose`), לא CI/CD אוטומטי בשלב הזה.
-- ניהול secrets: קובץ `.env` על המכונה + `--env-file`. **לא** Secrets Manager / SSM Parameter Store בשלב הזה (נשקל שוב ב-Phase 7, כשתהיה תשתית אמיתית).
+- ניהול secrets: קובץ `.env` על המכונה + `env_file` ב-compose. **לא** Secrets Manager / SSM Parameter Store בשלב הזה (נשקל שוב ב-Phase 7, כשתהיה תשתית אמיתית).
 - ארכיטקטורת מעבד: אם ייבחר instance מסוג Graviton/ARM (`t4g`) — ה-image צריך להיבנות ל-`linux/arm64` (`docker buildx`). ב-instance x86 (`t3`) ה-image הקיים מ-Phase 1 עובד כמו שהוא.
 
 **משימות:**
 
-- [ ] הקמת חשבון AWS + **הגדרת Budget Alarm לפני כל דבר אחר** — ה-Free Tier נגמר בשקט ו-AWS ממשיך לחייב בלי להתריע.
-- [ ] יצירת Key Pair + הפעלת EC2 instance (בחירת region, AMI, ו-instance type — `t3.micro` / `t4g.micro`).
-- [ ] Security Group — לאפשר SSH נכנס בלבד (רצוי מוגבל ל-IP שלך). אין צורך בפורטים נכנסים נוספים כי מדובר ב-polling.
-- [ ] התקנת Docker על ה-instance.
-- [ ] העברת `.env` ל-instance ב-`scp` (Telegram token, Anthropic API key, LangSmith key) — לא דרך git.
-- [ ] העלאת ה-image ל-instance — build מקומי + push ל-ECR, או build ישירות על ה-instance (להחליט בזמן העבודה). לוודא התאמת architecture.
-- [ ] פריסת ה-container עם `--env-file .env`.
-- [ ] מדיניות restart — `--restart unless-stopped` (או systemd service) כדי שהבוט יקום אוטומטית אחרי reboot/crash של ה-instance.
-- [ ] גישה בסיסית ללוגים — איך בודקים `docker logs` מרחוק דרך SSH כשמשהו משתבש.
-- [ ] בדיקת קבלה — הבוט מגיב בטלגרם לאורך זמן כשהמחשב האישי כבוי לגמרי.
+- [x] הקמת חשבון AWS + **הגדרת Budget Alarm לפני כל דבר אחר** — ה-Free Tier נגמר בשקט ו-AWS ממשיך לחייב בלי להתריע. (נעשה דרך התבנית המוכנה *Zero spend budget*; בנוסף הופעל MFA על ה-root user.)
+- [x] יצירת Key Pair + הפעלת EC2 instance — region `eu-central-1` (פרנקפורט), Ubuntu Server 24.04 LTS, ארכיטקטורת `x86_64` (ולכן ה-image של Phase 1 רץ כמו שהוא — לא נדרש `buildx`).
+- [x] Security Group — SSH (פורט 22) נכנס בלבד, מוגבל ל-IP הביתי (`Source type: My IP`). HTTP/HTTPS לא נפתחו.
+  > כשה-IP הביתי מתחלף, החיבור נתקע בלי שגיאה ברורה — מעדכנים את הכלל ב-Security Group, לא מחפשים תקלה בשרת.
+- [x] התקנת Docker על ה-instance — מהמאגר הרשמי של Docker (לא `apt install docker.io`), כולל `docker-compose-plugin`, והוספת המשתמש `ubuntu` לקבוצת `docker`.
+- [x] העברת `.env` ל-instance ב-`scp` (Telegram, Anthropic, USDA ו-LangSmith) — לא דרך git.
+- [x] העברת `coach_agent/users/gili.md` ל-`~/CoachAgent/data/users/` ב-`scp`. הקובץ מוחרג גם מ-git וגם מה-image (מידע אישי), ולכן מגיע כ-volume ב-runtime — בלעדיו ה-container קורס ב-`FileNotFoundError`.
+- [x] העלאת ה-image — **הוכרע: build ישירות על ה-instance** אחרי `git clone` של ה-repo (ציבורי). ECR נחסך לגמרי, והעדכון בעתיד הוא `git pull` + `docker compose up -d --build`.
+- [x] פריסת ה-container — דרך `docker-compose.yml` שנוסף ל-repo (`env_file`, volume ל-`data/users`, `restart`), במקום פקודת `docker run` ארוכה. פריסה = `docker compose up -d --build`.
+- [x] מדיניות restart — `restart: unless-stopped` ב-compose. **נבדק בפועל:** אותחל השרת, וה-container חזר לבד תוך שנייה בלי התערבות. שתי השכבות נדרשות — `docker` מופעל ב-boot (`systemctl is-enabled docker`) *וגם* מדיניות ה-restart.
+- [x] גישה בסיסית ללוגים — `docker compose logs -f` מתוך `~/CoachAgent` דרך SSH (`Ctrl+C` עוצר את הצפייה, לא את הבוט).
+- [ ] בדיקת קבלה — הבוט מגיב בטלגרם לאורך זמן כשהמחשב האישי כבוי לגמרי. (הבוט אומת כעונה מהשרת; נותר לאמת לאורך זמן עם המחשב כבוי.)
 
 **יציאה מה-Phase (Definition of Done):** הבוט רץ ברציפות על EC2 instance ב-AWS ללא תלות במחשב האישי, שורד restart של ה-instance, ויש Budget Alarm פעיל שמתריע לפני חיוב לא צפוי.
 
