@@ -10,7 +10,9 @@ __pycache__/
 מסמך *.md
 Dockerfile
 .dockerignore
+docker-compose.yml
 
 # Personal per-user data must never be baked into the image —
 # it's mounted as a volume at runtime instead (see deployment docs).
 coach_agent/users/*.md
+data/

@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    # Per-user instruction files are deliberately kept out of both git and the
+    # image (see .gitignore / .dockerignore) — personal data. They are mounted
+    # from the host at runtime, which also means editing gili.md on the server
+    # takes effect on the next restart, with no rebuild.
+    volumes:
+      - ./data/users:/app/coach_agent/users
+    restart: unless-stopped
