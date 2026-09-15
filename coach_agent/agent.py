@@ -20,7 +20,10 @@ def call_agent(
 
 
 def extract_text(message: anthropic.types.Message) -> str:
-    for block in message.content:
-        if block.type == "text":
-            return block.text
-    raise ValueError("Claude response contained no text block")
+    """Joined text of the message, or "" if it holds no text block at all.
+
+    A response with no text is a shape the API can legitimately return (a
+    tool_use-only turn, or one truncated by max_tokens), so the caller decides
+    what to do about it rather than getting an exception mid-conversation.
+    """
+    return "\n".join(block.text for block in message.content if block.type == "text")

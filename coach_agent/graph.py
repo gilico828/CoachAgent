@@ -34,12 +34,18 @@ class GraphState(TypedDict):
     response: str
 
 
+_EMPTY_RESPONSE_FALLBACK = "לא הצלחתי לנסח תשובה הפעם. אפשר לנסות שוב?"
+
+
 def _call_llm(state: GraphState) -> GraphState:
     message = call_agent(state["messages"], state["system_prompt"], tools=_TOOLS)
     content = [block.model_dump() for block in message.content]
     update: GraphState = {"messages": [{"role": "assistant", "content": content}]}
-    if message.stop_reason != "tool_use":
-        update["response"] = extract_text(message)
+    # Same signal the router uses. Deciding this from stop_reason instead let the
+    # two disagree — a turn truncated mid tool_use has no text to extract, and the
+    # old code raised before the router ever got to send it to the tool.
+    if not any(block["type"] == "tool_use" for block in content):
+        update["response"] = extract_text(message) or _EMPTY_RESPONSE_FALLBACK
     return update
 
 
