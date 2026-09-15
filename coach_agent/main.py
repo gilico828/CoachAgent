@@ -8,6 +8,10 @@ from coach_agent.graph import run_graph
 from coach_agent.prompt_assembly import build_system_prompt
 
 logging.basicConfig(level=logging.INFO)
+# python-telegram-bot puts the bot token in the request URL, and httpx logs every
+# URL at INFO — which wrote the token in clear text into the container logs.
+for _http_logger in ("httpx", "httpx2", "httpcore"):
+    logging.getLogger(_http_logger).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

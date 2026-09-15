@@ -1,0 +1,4 @@
+# Development-only dependencies. Deliberately not in requirements.txt, so the
+# image that runs on the server stays limited to what the bot needs at runtime.
+#   pip install -r requirements.txt -r requirements-dev.txt
+pytest
