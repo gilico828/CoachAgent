@@ -4,3 +4,4 @@ python-dotenv
 langgraph
 langsmith
 httpx
+tzdata

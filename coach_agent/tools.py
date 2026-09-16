@@ -6,6 +6,9 @@ and nowhere else.
 """
 
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import httpx
 
 from coach_agent.config import USDA_API_KEY
@@ -78,6 +81,38 @@ def search_by_barcode(barcode: str) -> dict | None:
     return None
 
 
+# --- Clock -------------------------------------------------------------------
+
+# Hardcoded on purpose: the EC2 instance runs in UTC, so a naive datetime.now()
+# would answer two or three hours off without raising anything. Becomes per-user
+# data in Phase 5.
+_TIMEZONE = ZoneInfo("Asia/Jerusalem")
+
+# datetime.weekday() is Monday-based, so index 0 is Monday.
+_HEBREW_WEEKDAYS = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
+
+_CLOCK_TOOL = {
+    "name": "get_current_datetime",
+    "description": (
+        "מחזיר את התאריך והשעה הנוכחיים באזור הזמן של המשתמש (ישראל), כולל יום בשבוע. "
+        "לקרוא לו בכל פעם שהתשובה תלויה בזמן הנוכחי — למשל 'מה אכלתי היום', "
+        "'כמה ימים נשארו עד', או כל התייחסות ל'עכשיו'/'אתמול'/'מחר'. "
+        "אין להסתמך על ידע פנימי לגבי התאריך — הוא לא מעודכן."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+
+def get_current_datetime() -> dict[str, str]:
+    now = datetime.now(_TIMEZONE)
+    return {
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M"),
+        "weekday": _HEBREW_WEEKDAYS[now.weekday()],
+        "timezone": "Asia/Jerusalem",
+    }
+
+
 # --- Registry ----------------------------------------------------------------
 
 
@@ -91,12 +126,17 @@ def _run_nutrition(tool_input: dict) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
-TOOLS = [_NUTRITION_TOOL]
+def _run_clock(tool_input: dict) -> str:
+    return json.dumps(get_current_datetime(), ensure_ascii=False)
+
+
+TOOLS = [_NUTRITION_TOOL, _CLOCK_TOOL]
 
 # Keyed off the schema itself, so a tool's name is written once and the schema and
 # its handler cannot drift apart.
 _HANDLERS = {
     _NUTRITION_TOOL["name"]: _run_nutrition,
+    _CLOCK_TOOL["name"]: _run_clock,
 }
 
 
