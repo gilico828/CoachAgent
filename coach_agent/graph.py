@@ -1,4 +1,3 @@
-import json
 import operator
 from typing import Annotated, TypedDict
 
@@ -6,26 +5,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from coach_agent.agent import call_agent, extract_text
-from coach_agent.nutrition import search_by_barcode, search_by_name
-
-_NUTRITION_TOOL = {
-    "name": "lookup_food",
-    "description": (
-        "מחפש ערכים תזונתיים (קלוריות, חלבון, פחמימות, שומן ל-100 גרם) של מוצר מזון "
-        "דרך USDA FoodData Central — לפי שם (query) או לפי ברקוד (barcode). "
-        "כשמחפשים לפי שם למזון גנרי/לא-ממותג, לנסח את query בסגנון התיאורים של "
-        "USDA (למשל 'banana, raw' ולא סתם 'banana') לתוצאות מדויקות יותר."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "שם המוצר לחיפוש, למשל 'banana, raw'"},
-            "barcode": {"type": "string", "description": "מספר ברקוד (UPC/EAN) של המוצר"},
-        },
-    },
-}
-
-_TOOLS = [_NUTRITION_TOOL]
+from coach_agent.tools import TOOLS, run_tool
 
 
 class GraphState(TypedDict):
@@ -38,7 +18,7 @@ _EMPTY_RESPONSE_FALLBACK = "לא הצלחתי לנסח תשובה הפעם. אפ
 
 
 def _call_llm(state: GraphState) -> GraphState:
-    message = call_agent(state["messages"], state["system_prompt"], tools=_TOOLS)
+    message = call_agent(state["messages"], state["system_prompt"], tools=TOOLS)
     content = [block.model_dump() for block in message.content]
     update: GraphState = {"messages": [{"role": "assistant", "content": content}]}
     # Same signal the router uses. Deciding this from stop_reason instead let the
@@ -55,11 +35,7 @@ def _run_tool(state: GraphState) -> GraphState:
     for block in last_message["content"]:
         if block.get("type") != "tool_use":
             continue
-        if block["input"].get("barcode"):
-            result = search_by_barcode(block["input"]["barcode"])
-        else:
-            result = search_by_name(block["input"].get("query", ""))
-        content = json.dumps(result, ensure_ascii=False) if result else "לא נמצא מוצר מתאים."
+        content = run_tool(block["name"], block.get("input") or {})
         tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": content})
     return {"messages": [{"role": "user", "content": tool_results}]}
 
