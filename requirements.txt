@@ -1,5 +1,8 @@
 python-telegram-bot>=21,<22
-anthropic
+# langsmith's wrap_anthropic still reaches for client.completions, the legacy
+# Text Completions API that anthropic dropped in 1.0. Unpinned, a rebuild takes
+# 1.x and the bot dies on import. Lift this when wrap_anthropic stops using it.
+anthropic<1
 python-dotenv
 langgraph
 langsmith
