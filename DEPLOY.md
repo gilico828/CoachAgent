@@ -37,6 +37,19 @@ scp -i $key coach_agent/users/gili.md ubuntu@<PUBLIC_IP>:~/CoachAgent/data/users
 cd ~/CoachAgent
 git pull
 docker compose up -d --build
+docker compose ps          # STATUS = Up
+docker compose logs --tail 20
+```
+
+**הפריסה לא נגמרת ב-`Built`.** `docker compose up` מסיים בהצלחה גם כשהבוט קורס
+ב-import מיד אחרי, כי מבחינת docker ה-container אכן עלה. הקריסה מופיעה רק בלוג,
+וב-polling אין פורט שייכשל ואין בקשה שתחזיר שגיאה — הסימן היחיד מבחוץ הוא שהבוט
+מפסיק לענות בטלגרם. שתי השורות האחרונות הן חלק מהפריסה, לא בדיקה אופציונלית.
+
+לוודא `RestartCount=0` — container שקורס בלולאה מציג `Up` בין נפילה לנפילה:
+
+```bash
+docker inspect coachagent-bot-1 --format "{{.RestartCount}}"
 ```
 
 ## סטטוס ולוגים
@@ -54,7 +67,7 @@ docker compose logs -f   # Ctrl+C עוצר את הצפייה, לא את הבוט
 
 נבדק בפועל: אחרי `sudo reboot` ה-container חזר לבד תוך שנייה.
 
-## שתי התקלות שיקרו
+## התקלות שיקרו
 
 **SSH נתקע בלי שגיאה ברורה.** ספק האינטרנט החליף לך IP בבית, וה-Security Group
 עדיין מכיר את הישן. מעדכנים את הכלל בקונסולה (EC2 → Security Groups → Inbound rules
@@ -66,12 +79,41 @@ docker compose logs -f   # Ctrl+C עוצר את הצפייה, לא את הבוט
 **ה-container קורס ב-`FileNotFoundError`.** `data/users/gili.md` חסר. הוא לא מגיע
 עם `git clone` ולא נמצא ב-image — צריך `scp` כמו למעלה.
 
+**ה-container קורס ב-`AttributeError` או `ImportError` אחרי rebuild שעבר חלק.**
+תלות לא נעולה ב-`requirements.txt` קיבלה גרסה חדשה. `--build` מריץ `pip install`
+מחדש ומושך את **העדכני ביותר** שמותר לפי הקובץ — כלומר הגרסאות נקבעות בזמן
+ה-build, לא בזמן הכתיבה. שני rebuild של אותו commit בדיוק יכולים להוליד שני
+image שונים.
+
+זה קרה בפועל: `anthropic` היה ללא נעילה, rebuild משך את 1.0 שהסירה את
+Text Completions API, ו-`wrap_anthropic` של langsmith עדיין ניגש ל-
+`client.completions` — הבוט קרס ב-import לפני שהגיע לטלגרם. הקוד לא השתנה;
+**rebuild לבדו הספיק.**
+
+מזהים לפי כך שה-traceback יושב בתוך `site-packages` ולא בקוד שלנו. מאבחנים
+בהשוואה מול ה-image הקודם:
+
+```bash
+docker compose exec bot pip freeze
+```
+
+מתקנים בנעילת הגרסה ב-`requirements.txt` — לא בהתקנה ידנית בתוך ה-container,
+שנמחקת ב-rebuild הבא.
+
+⚠️ **אין rollback ל-image הקודם.** `--build` דורס את התג `coachagent-bot:latest`,
+והישן נשאר dangling ונמחק ב-prune. עד שיהיה registry, הדרך חזרה היא לנעול את
+הגרסה ולבנות מחדש — ולכן שווה להסתכל בלוג *לפני* שסוגרים את הטרמינל.
+
 ## מה שלא נעשה כאן, במכוון
 
 - **ECR** — ה-repo ציבורי, אז ה-image נבנה על ה-instance אחרי `git clone`. אין צורך
   ב-registry, ו-`git pull` מספיק לעדכון.
 - **Secrets Manager / SSM** — `.env` מספיק למשתמש יחיד על מכונה אחת. נשקל שוב ב-Phase 7.
 - **CI/CD** — פריסה ידנית. אין עדיין מה להצדיק pipeline.
+- **lockfile (`pip-compile` / `uv lock`)** — היה מונע את תקלת הגרסאות לגמרי, ולא
+  רק את המקרה שכבר נשרף. הנעילות הנקודתיות ב-`requirements.txt` מטפלות בתלויות
+  הישירות אבל לא בתלויות-של-תלויות, ששם הסחיפה הבאה תגיע. נכון לעכשיו זה נדחה
+  כי הנעילה הנוכחית מספיקה למכונה אחת — אבל זו כנראה המשימה הבאה כשזה יכאב שוב.
 - **buildx / ARM** — ה-instance הוא x86, וה-image של Phase 1 רץ כמו שהוא. יחזור אם
   נעבור ל-Graviton.
 
