@@ -58,14 +58,19 @@ _graph_builder.add_edge("run_tool", "call_llm")
 graph = _graph_builder.compile(checkpointer=MemorySaver())
 
 
-def run_graph(user_id: int, user_message: str, system_prompt: str) -> str:
-    thread_id = str(user_id)
+def run_graph(user_key: str, user_message: str, system_prompt: str) -> str:
+    """Run one turn for the user identified by `user_key`.
+
+    The key arrives already built by the channel layer, so nothing here knows
+    which channel the message came from — only that this string isolates one
+    user's history from another's.
+    """
     config = {
-        "configurable": {"thread_id": thread_id},
+        "configurable": {"thread_id": user_key},
         # LangSmith groups traces into a thread by this metadata key, which is what
-        # turns per-message cost into per-conversation cost. It is the user id, so a
+        # turns per-message cost into per-conversation cost. It is the user key, so a
         # thread is that user's whole history — nothing marks a conversation as over.
-        "metadata": {"thread_id": thread_id},
+        "metadata": {"thread_id": user_key},
     }
     result = graph.invoke(
         {
