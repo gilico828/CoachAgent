@@ -1,10 +1,15 @@
 import anthropic
+from langsmith.wrappers import wrap_anthropic
 
 from coach_agent.config import ANTHROPIC_API_KEY
 
 _MODEL = "claude-sonnet-5"
 
-_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+# LangGraph traces its own nodes, but the call inside them is invisible to
+# LangSmith unwrapped: every run arrived as a chain with no usage, so there was
+# nothing to price. Wrapped, each call is an llm run carrying the token counts
+# the response already returns, and LangSmith costs it from those.
+_client = wrap_anthropic(anthropic.Anthropic(api_key=ANTHROPIC_API_KEY))
 
 
 def call_agent(

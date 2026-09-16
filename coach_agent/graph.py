@@ -83,7 +83,14 @@ graph = _graph_builder.compile(checkpointer=MemorySaver())
 
 
 def run_graph(user_id: int, user_message: str, system_prompt: str) -> str:
-    config = {"configurable": {"thread_id": str(user_id)}}
+    thread_id = str(user_id)
+    config = {
+        "configurable": {"thread_id": thread_id},
+        # LangSmith groups traces into a thread by this metadata key, which is what
+        # turns per-message cost into per-conversation cost. It is the user id, so a
+        # thread is that user's whole history — nothing marks a conversation as over.
+        "metadata": {"thread_id": thread_id},
+    }
     result = graph.invoke(
         {
             "messages": [{"role": "user", "content": user_message}],
