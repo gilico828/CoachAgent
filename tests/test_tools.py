@@ -85,14 +85,15 @@ def test_every_tool_offered_to_the_model_has_a_handler(tool_set):
     assert offered <= set(tools._HANDLERS)
 
 
-def test_the_two_modes_do_not_share_their_write_tools():
+def test_neither_mode_can_do_the_other_one_s_job():
     """The interviewer cannot look up food and the coach cannot close an intake.
 
     Not a rule either one is asked to follow — a tool neither was handed.
+    `update_coach_preferences` is the deliberate exception: it belongs to both,
+    because the intake uses it in the opening to save the name it was just given.
     """
     coach = {tool["name"] for tool in tools.COACH_TOOLS}
     intake = {tool["name"] for tool in tools.INTAKE_TOOLS}
-    assert "finish_intake" not in coach
-    assert "stop_intake" not in coach
+    assert {"finish_intake", "stop_intake"} & coach == set()
     assert "lookup_food" not in intake
-    assert "update_coach_preferences" not in intake
+    assert "update_coach_preferences" in coach & intake

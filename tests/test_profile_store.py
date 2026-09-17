@@ -183,6 +183,17 @@ def test_a_later_correction_changes_one_field_and_keeps_the_rest():
     assert stored["tone"] == "ישיר-תכל'ס"
 
 
+def test_a_name_given_in_the_opening_survives_an_intake_that_never_finished():
+    """It is saved when it is chosen, not at the end. Asking "what did you call
+    me again?" after a restart is the least personal thing this bot could do."""
+    profile_store.create_from_template(_USER)
+    tools.run_tool("update_coach_preferences", {"coach_name": "רוני"}, _CONTEXT)
+
+    assert profile_store.read_coach_preferences(_USER)["coach_name"] == "רוני"
+    assert profile_store.read_status(_USER) == profile_store.STATUS_INTAKE
+    assert "רוני" in profile_store.render_coach_preferences(_USER)
+
+
 def test_a_field_the_schema_never_defined_is_dropped_rather_than_stored():
     profile_store.write_coach_preferences(_USER, _preferences(invented_field="whatever"))
     assert "invented_field" not in profile_store.read_coach_preferences(_USER)
