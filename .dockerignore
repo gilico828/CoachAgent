@@ -15,4 +15,5 @@ docker-compose.yml
 # Personal per-user data must never be baked into the image —
 # it's mounted as a volume at runtime instead (see deployment docs).
 coach_agent/users/*.md
+coach_agent/users/*.json
 data/

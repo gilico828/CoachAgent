@@ -12,6 +12,9 @@ import pytest
 from coach_agent import tools
 
 
+_CONTEXT = tools.ToolContext(user_key="telegram_1")
+
+
 def _freeze(monkeypatch, moment: datetime) -> None:
     class _Frozen:
         @staticmethod
@@ -59,22 +62,37 @@ def test_every_weekday_maps_to_the_right_hebrew_name(monkeypatch, date, weekday)
 
 def test_each_tool_name_reaches_its_own_handler(monkeypatch):
     monkeypatch.setattr(tools, "search_by_name", lambda query: {"name": query})
-    assert json.loads(tools.run_tool("lookup_food", {"query": "banana"}))["name"] == "banana"
-    assert "date" in json.loads(tools.run_tool("get_current_datetime", {}))
+    assert json.loads(tools.run_tool("lookup_food", {"query": "banana"}, _CONTEXT))["name"] == "banana"
+    assert "date" in json.loads(tools.run_tool("get_current_datetime", {}, _CONTEXT))
 
 
 def test_a_barcode_wins_over_a_query_when_the_model_sends_both(monkeypatch):
     monkeypatch.setattr(tools, "search_by_barcode", lambda barcode: {"name": "by barcode"})
     monkeypatch.setattr(tools, "search_by_name", lambda query: {"name": "by name"})
-    result = json.loads(tools.run_tool("lookup_food", {"query": "x", "barcode": "123"}))
+    result = json.loads(tools.run_tool("lookup_food", {"query": "x", "barcode": "123"}, _CONTEXT))
     assert result["name"] == "by barcode"
 
 
 def test_an_unknown_tool_is_reported_back_instead_of_raising():
     """A hallucinated tool name should cost one wasted turn, not kill the conversation."""
-    assert "no_such_tool" in tools.run_tool("no_such_tool", {})
+    assert "no_such_tool" in tools.run_tool("no_such_tool", {}, _CONTEXT)
 
 
-def test_every_tool_offered_to_the_model_has_a_handler():
-    """A schema in TOOLS with no entry in _HANDLERS is a dead end the model can reach."""
-    assert {tool["name"] for tool in tools.TOOLS} == set(tools._HANDLERS)
+@pytest.mark.parametrize("tool_set", ["COACH_TOOLS", "INTAKE_TOOLS"])
+def test_every_tool_offered_to_the_model_has_a_handler(tool_set):
+    """A schema offered with no entry in _HANDLERS is a dead end the model can reach."""
+    offered = {tool["name"] for tool in getattr(tools, tool_set)}
+    assert offered <= set(tools._HANDLERS)
+
+
+def test_the_two_modes_do_not_share_their_write_tools():
+    """The interviewer cannot look up food and the coach cannot close an intake.
+
+    Not a rule either one is asked to follow — a tool neither was handed.
+    """
+    coach = {tool["name"] for tool in tools.COACH_TOOLS}
+    intake = {tool["name"] for tool in tools.INTAKE_TOOLS}
+    assert "finish_intake" not in coach
+    assert "stop_intake" not in coach
+    assert "lookup_food" not in intake
+    assert "update_coach_preferences" not in intake

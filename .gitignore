@@ -5,6 +5,7 @@ __pycache__/
 .env
 .obsidian/
 coach_agent/users/*.md
+coach_agent/users/*.json
 !coach_agent/users/template.MD
 
 # Runtime data mounted into the container (per-user files on the server)
