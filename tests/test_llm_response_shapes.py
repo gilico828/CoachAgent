@@ -17,6 +17,14 @@ class _Block:
         return dict(self.__dict__)
 
 
+_STATE = {
+    "messages": [],
+    "system_prompt": "s",
+    "tools": [],
+    "user_key": "telegram_1",
+    "response": "",
+}
+
 def _message(content: list, stop_reason: str):
     return types.SimpleNamespace(content=content, stop_reason=stop_reason)
 
@@ -32,7 +40,7 @@ def _tool_use(**inp) -> _Block:
 def _run(message, monkeypatch) -> tuple[str | None, bool]:
     """Returns (response the user would get, whether the graph routes to the tool)."""
     monkeypatch.setattr(graph, "call_agent", lambda *a, **k: message)
-    update = graph._call_llm({"messages": [], "system_prompt": "s", "response": ""})
+    update = graph._call_llm(_STATE)
     routed = graph._route_after_llm({"messages": [update["messages"][0]]}) == "run_tool"
     return update.get("response"), routed
 
