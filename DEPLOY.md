@@ -31,6 +31,12 @@ scp -i $key .env ubuntu@<PUBLIC_IP>:~/CoachAgent/.env
 scp -i $key coach_agent/users/gili.md ubuntu@<PUBLIC_IP>:~/CoachAgent/data/users/gili.md
 ```
 
+**כשמוסיפים מפתח חדש ל-`.env` המקומי — חייבים scp מחדש.** `config.py` קורא כל
+מפתח עם `os.environ[...]`, כך ש-`.env` חסר-מפתח מפיל את הקונטיינר ב-import עם
+`KeyError`, לפני שורת לוג אחת משלנו. הסימן מבחוץ זהה לכל תקלה אחרת ב-polling:
+הבוט פשוט שותק. `GROQ_API_KEY` (תמלול קולי, Phase 10) הוא המקרה האחרון שבו זה
+רלוונטי — deploy של הגרסה הזו בלי לעדכן את `.env` בשרת ייכשל בהפעלה.
+
 ## עדכון גרסה
 
 ```bash
