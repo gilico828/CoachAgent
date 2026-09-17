@@ -8,11 +8,11 @@ and nowhere else.
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import httpx
 
-from coach_agent import profile_store
+from coach_agent import log_store, profile_store
+from coach_agent.clock import TIMEZONE as _TIMEZONE
 from coach_agent.config import USDA_API_KEY
 
 
@@ -98,11 +98,6 @@ def search_by_barcode(barcode: str) -> dict | None:
 
 # --- Clock -------------------------------------------------------------------
 
-# Hardcoded on purpose: the EC2 instance runs in UTC, so a naive datetime.now()
-# would answer two or three hours off without raising anything. Becomes per-user
-# data in Phase 5.
-_TIMEZONE = ZoneInfo("Asia/Jerusalem")
-
 # datetime.weekday() is Monday-based, so index 0 is Monday.
 _HEBREW_WEEKDAYS = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
 
@@ -126,6 +121,190 @@ def get_current_datetime() -> dict[str, str]:
         "weekday": _HEBREW_WEEKDAYS[now.weekday()],
         "timezone": "Asia/Jerusalem",
     }
+
+
+# --- Food log and measurements -----------------------------------------------
+
+# A figure the model produced from its own sense of what a bagel "usually" has is
+# indistinguishable, once stored, from one the USDA returned. Said in the
+# description because there is no way to tell them apart at write time.
+_NUMBERS_NOTE = (
+    "ערכים תזונתיים: להשלים ממה ש-lookup_food החזיר. "
+    "אם לא נבדק ואין ערך אמיתי — להשאיר ריק ולא לנחש מספר."
+)
+
+_LOG_MEAL_TOOL = {
+    "name": "log_meal",
+    "description": (
+        "רושם ביומן התזונה מה המתאמן אכל. "
+        "כל פריטי אותה ארוחה בקריאה אחת — כל פריט נשמר בשורה משלו עם אותה שעה. "
+        + _NUMBERS_NOTE
+        + " מה שנאמר ואין לו שדה משלו — איך הרגיש אחרי, עם מי אכל, למה דילג — "
+        "הולך ל-notes כטקסט חופשי. אין להמציא שמות שדות."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "description": "פריטי הארוחה, כל אחד בנפרד.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item": {
+                            "type": "string",
+                            "description": "שם המזון, במילים של המתאמן.",
+                        },
+                        "grams": {"type": "number", "description": "כמות בגרמים, אם ידועה."},
+                        "calories": {"type": "number"},
+                        "protein": {"type": "number"},
+                        "carbs": {"type": "number"},
+                        "fat": {"type": "number"},
+                        "notes": {
+                            "type": "string",
+                            "description": "מה שנאמר על הפריט ואין לו שדה משלו.",
+                        },
+                    },
+                    "required": ["item"],
+                },
+            },
+            "meal_type": {
+                "type": "string",
+                "enum": list(log_store.MEAL_TYPES),
+                "description": "סוג הארוחה. להשמיט אם לא ברור מהשיחה.",
+            },
+            "eaten_at": {
+                "type": "string",
+                "description": (
+                    "מתי נאכל, בפורמט ISO-8601 (למשל 2026-09-18T08:30). "
+                    "ברירת המחדל היא עכשיו — לשלוח רק כשמדובר במשהו שנאכל קודם."
+                ),
+            },
+        },
+        "required": ["items"],
+    },
+}
+
+_FOOD_LOG_TOOL = {
+    "name": "get_food_log",
+    "description": (
+        "מחזיר מה המתאמן אכל ביום מסוים, כולל סיכום קלוריות ומאקרו. "
+        "לקרוא לו לפני כל תשובה על מה נאכל — גם על היום הנוכחי — ולא להסתמך על "
+        "מה שנאמר קודם בשיחה, כי ייתכן שנרשמו דברים בשיחה אחרת."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "date": {
+                "type": "string",
+                "description": "תאריך בפורמט YYYY-MM-DD. ברירת מחדל: היום.",
+            }
+        },
+    },
+}
+
+_LOG_MEASUREMENT_TOOL = {
+    "name": "log_measurement",
+    "description": (
+        "רושם מדידה של המתאמן. רק המדדים שברשימה — אין להמציא מדד חדש. "
+        "מה שאין לו מדד נרשם כ-notes על ארוחה, או נשאר בפרופיל."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "metric": {
+                "type": "string",
+                "enum": list(log_store.METRIC_UNITS),
+                "description": "weight = משקל, body_fat = אחוז שומן.",
+            },
+            "value": {"type": "number", "description": "הערך המספרי בלבד."},
+            "measured_at": {
+                "type": "string",
+                "description": "ISO-8601. ברירת מחדל: עכשיו.",
+            },
+            "notes": {"type": "string", "description": "הקשר שנאמר על המדידה."},
+        },
+        "required": ["metric", "value"],
+    },
+}
+
+_MEASUREMENTS_TOOL = {
+    "name": "get_measurements",
+    "description": (
+        "מחזיר את המדידות של המתאמן במדד מסוים, מהישנה לחדשה, לצורך מגמה. "
+        "לקרוא לו לפני כל אמירה על שינוי במשקל או באחוז שומן."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "metric": {"type": "string", "enum": list(log_store.METRIC_UNITS)},
+            "days": {
+                "type": "integer",
+                "description": "כמה ימים אחורה. להשמיט כדי לקבל הכל.",
+            },
+        },
+        "required": ["metric"],
+    },
+}
+
+_UNKNOWN_METRIC_REPLY = "המדד {metric} לא קיים. המדדים האפשריים: {options}."
+
+
+def _run_log_meal(tool_input: dict, context: ToolContext) -> str:
+    written = log_store.log_meal(
+        context.user_key,
+        tool_input.get("items", []),
+        meal_type=tool_input.get("meal_type"),
+        eaten_at=tool_input.get("eaten_at"),
+    )
+    if not written:
+        # Reported back rather than raised, like an unknown section name: the call
+        # was malformed and the model can correct it on the next turn.
+        return "לא נרשם כלום — אף פריט לא הגיע עם שם."
+    return f"נרשמו {written} פריטים ביומן."
+
+
+def _run_get_food_log(tool_input: dict, context: ToolContext) -> str:
+    date = tool_input.get("date") or get_current_datetime()["date"]
+    day = log_store.food_log_for_day(context.user_key, date)
+    if not day["items"]:
+        # An empty day and a day nobody logged look identical from here, and the
+        # difference changes what the coach should say — so it is spelled out
+        # instead of left as an empty list for the model to interpret.
+        return f"אין רישומים ביומן בתאריך {date}."
+    return json.dumps(day, ensure_ascii=False)
+
+
+def _run_log_measurement(tool_input: dict, context: ToolContext) -> str:
+    metric = tool_input.get("metric")
+    try:
+        log_store.log_measurement(
+            context.user_key,
+            metric,
+            tool_input["value"],
+            measured_at=tool_input.get("measured_at"),
+            notes=tool_input.get("notes"),
+        )
+    except log_store.UnknownMetric:
+        return _UNKNOWN_METRIC_REPLY.format(
+            metric=metric, options=", ".join(log_store.METRIC_UNITS)
+        )
+    return f"נרשם: {metric} = {tool_input['value']} {log_store.METRIC_UNITS[metric]}."
+
+
+def _run_get_measurements(tool_input: dict, context: ToolContext) -> str:
+    metric = tool_input.get("metric")
+    try:
+        readings = log_store.measurements_for(
+            context.user_key, metric, days=tool_input.get("days")
+        )
+    except log_store.UnknownMetric:
+        return _UNKNOWN_METRIC_REPLY.format(
+            metric=metric, options=", ".join(log_store.METRIC_UNITS)
+        )
+    if not readings:
+        return f"אין מדידות של {metric} ליומן הזה."
+    return json.dumps(readings, ensure_ascii=False)
 
 
 # --- Intake: the two documents -----------------------------------------------
@@ -361,7 +540,15 @@ def _run_clock(tool_input: dict, context: ToolContext) -> str:
 # Two sets, because the two modes are two different jobs. The interviewer cannot
 # look up calories and the coach cannot close an intake — not as a rule it is
 # asked to follow, but as a tool it was never handed.
-COACH_TOOLS = [_NUTRITION_TOOL, _CLOCK_TOOL, _UPDATE_PREFERENCES_TOOL]
+COACH_TOOLS = [
+    _NUTRITION_TOOL,
+    _CLOCK_TOOL,
+    _UPDATE_PREFERENCES_TOOL,
+    _LOG_MEAL_TOOL,
+    _FOOD_LOG_TOOL,
+    _LOG_MEASUREMENT_TOOL,
+    _MEASUREMENTS_TOOL,
+]
 # update_coach_preferences is in both sets. During the intake it is what saves
 # the coach's name the moment it is chosen, in the opening, rather than holding
 # it in the conversation until finish_intake — a name picked and then lost to a
@@ -383,6 +570,10 @@ _HANDLERS = {
     _FINISH_INTAKE_TOOL["name"]: _run_finish_intake,
     _STOP_INTAKE_TOOL["name"]: _run_stop_intake,
     _UPDATE_PREFERENCES_TOOL["name"]: _run_update_preferences,
+    _LOG_MEAL_TOOL["name"]: _run_log_meal,
+    _FOOD_LOG_TOOL["name"]: _run_get_food_log,
+    _LOG_MEASUREMENT_TOOL["name"]: _run_log_measurement,
+    _MEASUREMENTS_TOOL["name"]: _run_get_measurements,
 }
 
 
