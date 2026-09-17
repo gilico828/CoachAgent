@@ -1,3 +1,4 @@
+import hmac
 import logging
 
 from telegram import Update
@@ -5,7 +6,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from coach_agent import profile_store
-from coach_agent.config import ALLOWED_USER_KEYS, TELEGRAM_BOT_TOKEN
+from coach_agent.config import INVITE_CODE, TELEGRAM_BOT_TOKEN
 from coach_agent.graph import run_graph
 from coach_agent.prompt_assembly import build_intake_prompt, build_system_prompt
 from coach_agent.tools import INTAKE_TOOLS
@@ -22,8 +23,9 @@ _CHANNEL = "telegram"
 
 _START_REPLY = "היי! אני כאן. אפשר לספר לי מה אכלת, לשאול על אימונים, או פשוט להתחיל לדבר."
 _UNKNOWN_USER_REPLY = (
-    "היי! אני בוט אישי ואני לא מכיר אותך עדיין, אז אני לא יכול לענות. "
-    "אם הגעת לכאן בטעות — סליחה על ההפרעה. אם לא — בקש/י מגילי להוסיף אותך."
+    "היי! אני בוט אישי ואני עונה רק למי שהוזמן. "
+    "אם קיבלת קישור הזמנה — כדאי ללחוץ עליו שוב, הוא זה שפותח לי את הדלת. "
+    "ואם הגעת לכאן במקרה — סליחה על ההפרעה."
 )
 _BLOCKED_REPLY = (
     "היי. דיברנו על משהו שאני לא הכתובת הנכונה בשבילו, אז אני לא ממשיך בליווי כאן. "
@@ -62,15 +64,11 @@ def _reply_for(user_key: str, text: str) -> str:
     status = profile_store.read_status(user_key)
 
     if status is None:
-        if user_key not in ALLOWED_USER_KEYS:
-            # This log line is the only way to learn a new user's id: while
-            # polling is running it consumes every update, so getUpdates has
-            # nothing left to show.
-            logger.warning("Message from unknown user %s — not on the allowlist.", user_key)
-            return _UNKNOWN_USER_REPLY
-        logger.info("Starting an intake for %s", user_key)
-        profile_store.create_from_template(user_key)
-        status = profile_store.STATUS_INTAKE
+        # Nothing is created here. A profile begins in one place only — a
+        # /start carrying the invite code — so an ordinary message from a
+        # stranger cannot open the door by arriving.
+        logger.warning("Message from %s, who has no profile and no invite.", user_key)
+        return _UNKNOWN_USER_REPLY
 
     if status == profile_store.STATUS_BLOCKED:
         # Answered without reaching the model at all: the intake stopped on a
@@ -93,8 +91,31 @@ def _reply_for(user_key: str, text: str) -> str:
     return run_graph(user_key, text, build_system_prompt(user_key))
 
 
+def _admit(user_key: str, args: list[str]) -> bool:
+    """Whether this /start may be answered, creating a profile if it opens one.
+
+    A Telegram deep link — t.me/<bot>?start=<code> — arrives as /start with the
+    code as its argument, which is why a link is the whole of what a new person
+    has to be sent: nothing about them has to be known beforehand and nothing
+    has to be edited afterwards.
+    """
+    if profile_store.read_status(user_key) is not None:
+        return True
+    # compare_digest and not ==, because this is a shared secret compared on
+    # every /start the bot ever receives.
+    if not (INVITE_CODE and args[:1] and hmac.compare_digest(args[0], INVITE_CODE)):
+        logger.warning("/start from %s without a valid invite code.", user_key)
+        return False
+    logger.info("Invite accepted — starting an intake for %s", user_key)
+    profile_store.create_from_template(user_key)
+    return True
+
+
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_key = _user_key(update)
+    if not _admit(user_key, context.args or []):
+        await update.message.reply_text(_UNKNOWN_USER_REPLY)
+        return
     if profile_store.read_status(user_key) == profile_store.STATUS_ACTIVE:
         await update.message.reply_text(_START_REPLY)
         return
@@ -110,9 +131,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_key = _user_key(update)
     # Refusing before the download and not inside the graph is the point: an
-    # unknown sender costs no transfer, no transcription and no tokens.
-    if profile_store.read_status(user_key) is None and user_key not in ALLOWED_USER_KEYS:
-        logger.warning("Voice message from unknown user %s — not on the allowlist.", user_key)
+    # unknown sender costs no transfer, no transcription and no tokens. A
+    # recording cannot carry an invite code, so there is nothing else to check.
+    if profile_store.read_status(user_key) is None:
+        logger.warning("Voice message from %s, who has no profile and no invite.", user_key)
         await update.message.reply_text(_UNKNOWN_USER_REPLY)
         return
 
