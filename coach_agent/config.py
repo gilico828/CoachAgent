@@ -9,10 +9,13 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 USDA_API_KEY = os.environ["USDA_API_KEY"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 
-# Telegram user keys allowed to start an intake, comma separated. Without this
-# list "no profile yet" means "interview them", and anyone who finds the bot in
-# search runs a twenty-minute LLM conversation on our bill. Users who already
-# have a profile are unaffected — they never reach this gate.
-ALLOWED_USER_KEYS = {
-    key.strip() for key in os.environ.get("ALLOWED_USER_KEYS", "").split(",") if key.strip()
-}
+# The shared secret carried by an invite link, and the only way a new person can
+# start an intake. It replaced a list of Telegram ids: that list could only be
+# written after someone had already messaged the bot and been refused, which
+# made every new user cost a look through the logs and a redeploy. A code in a
+# link needs to know nothing about them in advance.
+#
+# Empty means nobody can join — deliberately, because the failure that matters
+# is the other one. Generate with `python -c "import secrets;
+# print(secrets.token_urlsafe(12))"`; it travels in a URL, so keep it URL-safe.
+INVITE_CODE = os.environ.get("INVITE_CODE", "").strip()
