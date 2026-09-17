@@ -7,6 +7,7 @@ __pycache__/
 coach_agent/users/*.md
 coach_agent/users/*.json
 !coach_agent/users/template.MD
+coach_agent/data/
 
 # Runtime data mounted into the container (per-user files on the server)
 data/
