@@ -10,6 +10,11 @@
 ssh -i "$env:USERPROFILE\.ssh\coach-agent-key.pem" ubuntu@<PUBLIC_IP>
 ```
 
+**כשהכתובת לא עובדת, או כשהיא נשכחה** — היא לא נמצאת בשום מקום אחר בפרויקט, וזה
+המקום היחיד שבו היא כתובה. לשלוף מחדש מקונסולת AWS: EC2 → Instances → העמודה
+`Public IPv4 address`. `reboot` שומר עליה, `stop` ואחריו `start` מקצה חדשה —
+ואז **צריך לעדכן את השורה הזו**, אחרת החיפוש הזה חוזר מאפס בפריסה הבאה.
+
 המפתח הפרטי יושב ב-`~/.ssh/coach-agent-key.pem` ואין לו עותק אצל AWS. אין בפרויקט
 העתק שלו וגם לא אמור להיות.
 
@@ -18,10 +23,16 @@ ssh -i "$env:USERPROFILE\.ssh\coach-agent-key.pem" ubuntu@<PUBLIC_IP>
 ```
 ~/CoachAgent/            # git clone של ה-repo
 ├── .env                 # לא ב-git — מגיע ב-scp
-└── data/users/gili.md   # לא ב-git ולא ב-image — מגיע ב-scp, מחובר כ-volume
+├── data/users/gili.md   # לא ב-git ולא ב-image — מגיע ב-scp, מחובר כ-volume
+└── data/db/coach.db     # יומן תזונה ומדדים — נוצר לבד בהרצה ראשונה, לא מגיע ב-scp
 ```
 
-שני הקבצים האלה מוחרגים במכוון: `.env` מכיל מפתחות, ו-`gili.md` הוא מידע אישי
+`coach.db` שונה משניהם: הוא לא מועבר מהמחשב אלא נוצר על השרת בפעם הראשונה
+שמישהו רושם ארוחה, והסכמה שלו מתעדכנת לבד (`PRAGMA user_version`) בכל עדכון
+גרסה. **הוא היחיד כאן שמצטבר** — `.env` ו-`gili.md` אפשר לשחזר, חודש של יומן
+תזונה לא.
+
+שני הקבצים הראשונים מוחרגים במכוון: `.env` מכיל מפתחות, ו-`gili.md` הוא מידע אישי
 שאסור שייאפה לתוך image. הם מועברים ידנית:
 
 ```powershell
@@ -101,6 +112,16 @@ docker compose logs -f   # Ctrl+C עוצר את הצפייה, לא את הבוט
 
 **ה-container קורס ב-`FileNotFoundError`.** `data/users/gili.md` חסר. הוא לא מגיע
 עם `git clone` ולא נמצא ב-image — צריך `scp` כמו למעלה.
+
+**היומן מתאפס בכל עדכון גרסה.** ה-volume של `data/db` לא חובר — ואז SQLite כותב
+לתוך ה-container, ש-`up --build` מוחק ובונה מחדש. **אין שום שגיאה:** הבוט עולה,
+עונה יפה, ופשוט לא זוכר אף ארוחה מלפני הפריסה. בודקים שהקובץ נמצא בשני הצדדים —
+`docker compose exec bot ls -la /app/coach_agent/data`, ומחוץ לקונטיינר ש-
+`~/CoachAgent/data/db/coach.db` גדל. זה גם הקובץ היחיד כאן ששווה לגבות:
+
+```bash
+sqlite3 ~/CoachAgent/data/db/coach.db ".backup '/home/ubuntu/coach-backup.db'"
+```
 
 **ה-container קורס ב-`AttributeError` או `ImportError` אחרי rebuild שעבר חלק.**
 תלות לא נעולה ב-`requirements.txt` קיבלה גרסה חדשה. `--build` מריץ `pip install`

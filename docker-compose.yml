@@ -8,4 +8,8 @@ services:
     # takes effect on the next restart, with no rebuild.
     volumes:
       - ./data/users:/app/coach_agent/users
+      # The food log and measurements. A second volume and not a subdirectory
+      # of the first: the profiles are edited by hand and restored by scp, the
+      # database is neither — different backup story, different mount.
+      - ./data/db:/app/coach_agent/data
     restart: unless-stopped
