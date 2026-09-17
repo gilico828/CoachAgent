@@ -188,6 +188,7 @@ def open_fields(user_key: str) -> list[str]:
 # Rendered in this order, under these labels. The dict is the template — there is
 # no second Markdown file to drift away from the schema.
 _COACH_LABELS = {
+    "coach_name": "השם שבחרו לי",
     "address_form": "לשון פנייה",
     "tone": "טון",
     "reply_length": "אורך תשובות",
@@ -205,6 +206,7 @@ _KNOWN_COACH_FIELDS = set(_COACH_LABELS) | {"expectations_quote"}
 _MAX_QUOTE_CHARS = 300
 _MAX_TOPICS = 10
 _MAX_TOPIC_CHARS = 60
+_MAX_NAME_CHARS = 30
 
 
 def read_coach_preferences(user_key: str) -> dict:
@@ -237,6 +239,8 @@ def write_coach_preferences(user_key: str, values: dict) -> None:
         ]
     if "expectations_quote" in stored:
         stored["expectations_quote"] = str(stored["expectations_quote"])[:_MAX_QUOTE_CHARS]
+    if "coach_name" in stored:
+        stored["coach_name"] = str(stored["coach_name"])[:_MAX_NAME_CHARS]
     _write_atomic(coach_path(user_key), json.dumps(stored, ensure_ascii=False, indent=2) + "\n")
 
 

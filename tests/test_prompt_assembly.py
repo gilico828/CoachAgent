@@ -86,3 +86,13 @@ def test_the_intake_prompt_carries_the_document_as_it_stands(monkeypatch, tmp_pa
 
     assert "ירידה של 8" in assembled
     assert "שאלה אחת בכל הודעה" in assembled
+
+
+def test_a_resumed_intake_still_knows_the_name_it_was_given(monkeypatch, tmp_path):
+    """The name is saved in the opening. An interviewer that cannot read it back
+    has to ask what it is called, which is the one thing it must never ask twice."""
+    monkeypatch.setattr(profile_store, "USERS_DIR", tmp_path)
+    profile_store.create_from_template("telegram_111")
+    profile_store.write_coach_preferences("telegram_111", {"coach_name": "רוני"})
+
+    assert "רוני" in prompt_assembly.build_intake_prompt("telegram_111")

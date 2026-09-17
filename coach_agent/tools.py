@@ -168,6 +168,13 @@ _SAVE_SECTION_TOOL = {
 # text: this document is pasted into the system prompt, so a free-text field here
 # is a channel from whatever the user types straight into the instruction layer.
 _COACH_PREFERENCE_FIELDS = {
+    "coach_name": {
+        "type": "string",
+        "description": (
+            "השם שהמתאמן בחר לקרוא לך. נשאל בפתיחת האינטק ונשמר מיד — "
+            "לא ממתין ל-finish_intake. אם המתאמן לא רצה לבחור שם, להשאיר ריק."
+        ),
+    },
     "address_form": {
         "type": "string",
         "enum": ["זכר", "נקבה", "ניטרלית"],
@@ -355,7 +362,17 @@ def _run_clock(tool_input: dict, context: ToolContext) -> str:
 # look up calories and the coach cannot close an intake — not as a rule it is
 # asked to follow, but as a tool it was never handed.
 COACH_TOOLS = [_NUTRITION_TOOL, _CLOCK_TOOL, _UPDATE_PREFERENCES_TOOL]
-INTAKE_TOOLS = [_SAVE_SECTION_TOOL, _FINISH_INTAKE_TOOL, _STOP_INTAKE_TOOL, _CLOCK_TOOL]
+# update_coach_preferences is in both sets. During the intake it is what saves
+# the coach's name the moment it is chosen, in the opening, rather than holding
+# it in the conversation until finish_intake — a name picked and then lost to a
+# restart is the least personal thing this bot could do.
+INTAKE_TOOLS = [
+    _SAVE_SECTION_TOOL,
+    _UPDATE_PREFERENCES_TOOL,
+    _FINISH_INTAKE_TOOL,
+    _STOP_INTAKE_TOOL,
+    _CLOCK_TOOL,
+]
 
 # Keyed off the schema itself, so a tool's name is written once and the schema and
 # its handler cannot drift apart.

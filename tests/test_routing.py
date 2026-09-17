@@ -55,8 +55,13 @@ def test_an_allowed_newcomer_gets_a_profile_and_the_interviewer(graph_calls):
     main._reply_for(_USER, "היי")
 
     assert profile_store.read_status(_USER) == profile_store.STATUS_INTAKE
-    assert graph_calls[0]["tools"] == ["save_trainee_section", "finish_intake", "stop_intake",
-                                       "get_current_datetime"]
+    assert graph_calls[0]["tools"] == [
+        "save_trainee_section",
+        "update_coach_preferences",
+        "finish_intake",
+        "stop_intake",
+        "get_current_datetime",
+    ]
     assert "מראיין" in graph_calls[0]["system_prompt"]
 
 
