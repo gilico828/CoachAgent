@@ -23,6 +23,7 @@ _STATE = {
     "tools": [],
     "user_key": "telegram_1",
     "response": "",
+    "image_block": None,
 }
 
 def _message(content: list, stop_reason: str):

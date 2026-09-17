@@ -1,4 +1,6 @@
+import base64
 import operator
+from dataclasses import dataclass
 from typing import Annotated, TypedDict
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -6,6 +8,61 @@ from langgraph.graph import END, StateGraph
 
 from coach_agent.agent import call_agent, extract_text
 from coach_agent.tools import COACH_TOOLS, ToolContext, run_tool
+
+
+@dataclass(frozen=True)
+class ImageAttachment:
+    """One image on its way to the model, as the channel layer holds it.
+
+    Telegram hands over bytes and a type and knows nothing else; the base64 the
+    API wants is an encoding detail of *this* layer, so it happens here.
+    """
+
+    data: bytes
+    media_type: str
+
+
+@dataclass(frozen=True)
+class UserInput:
+    """What the user sent this turn, before it is anything Anthropic-shaped.
+
+    The channel layer builds this and stops. Which blocks it becomes is decided
+    below and nowhere else — so a second channel (Phase 7) has to know how to
+    pull a photo out of its own updates, and that is all it has to know.
+    """
+
+    text: str
+    image: ImageAttachment | None = None
+
+
+# Stands in the conversation history for an image that was sent once. What the
+# model saw is carried from here on by its own reply, which is text and costs
+# text; the image itself is not kept, because a checkpointed image block is
+# re-sent, and re-billed, on every later turn of the same conversation.
+_IMAGE_PLACEHOLDER = "[תמונה שהמשתמש שלח]"
+
+
+def _image_block(image: ImageAttachment) -> dict:
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": image.media_type,
+            "data": base64.standard_b64encode(image.data).decode(),
+        },
+    }
+
+
+def _opening_text(user_input: UserInput) -> str:
+    """The text that enters the history for this turn.
+
+    A photo usually arrives with a caption ("זה מה שאכלתי") but not always, and
+    a message with empty content is rejected by the API — so the placeholder is
+    also what keeps a caption-less photo a legal turn.
+    """
+    if user_input.image is None:
+        return user_input.text
+    return f"{_IMAGE_PLACEHOLDER} {user_input.text}".strip()
 
 
 class GraphState(TypedDict):
@@ -17,13 +74,44 @@ class GraphState(TypedDict):
     tools: list[dict]
     user_key: str
     response: str
+    # This turn's image, already in API shape, held apart from `messages` so it
+    # is never checkpointed into the history. Each turn overwrites it, so a
+    # later text-only message clears the previous photo rather than inheriting
+    # it — `messages` is append-only, this is not.
+    image_block: dict | None
 
 
 _EMPTY_RESPONSE_FALLBACK = "לא הצלחתי לנסח תשובה הפעם. אפשר לנסות שוב?"
 
 
+def _with_image(messages: list[dict], image_block: dict | None) -> list[dict]:
+    """The messages as the API should see them on this call, image included.
+
+    The picture is attached to the message that opened the turn, and only while
+    that message is still the last one — so a tool round-trip inside the same
+    turn does not buy it a second time. A turn-opening message carries a plain
+    string; a tool result carries a list of blocks, which is what tells the two
+    apart. `messages` itself is never touched: what the checkpointer keeps, and
+    what every later turn is billed for, stays the placeholder text.
+    """
+    if image_block is None:
+        return messages
+    opening = messages[-1]
+    if opening["role"] != "user" or not isinstance(opening["content"], str):
+        return messages
+    # Image before text: the caption ("זה מה שאכלתי") is a question about the
+    # picture, and the model answers it better having already seen it.
+    return messages[:-1] + [
+        {
+            "role": "user",
+            "content": [image_block, {"type": "text", "text": opening["content"]}],
+        }
+    ]
+
+
 def _call_llm(state: GraphState) -> GraphState:
-    message = call_agent(state["messages"], state["system_prompt"], tools=state["tools"])
+    messages = _with_image(state["messages"], state["image_block"])
+    message = call_agent(messages, state["system_prompt"], tools=state["tools"])
     content = [block.model_dump() for block in message.content]
     update: GraphState = {"messages": [{"role": "assistant", "content": content}]}
     # Same signal the router uses. Deciding this from stop_reason instead let the
@@ -66,7 +154,7 @@ graph = _graph_builder.compile(checkpointer=MemorySaver())
 
 def run_graph(
     user_key: str,
-    user_message: str,
+    user_message: str | UserInput,
     system_prompt: str,
     tools: list[dict] | None = None,
     thread_id: str | None = None,
@@ -80,6 +168,10 @@ def run_graph(
     # The intake runs on its own thread, so the coach does not carry twenty
     # minutes of interview in every later message: the two documents *are* the
     # summary of that conversation, which is the whole reason they were written.
+    # A plain string still means a plain text turn, so the text and voice paths
+    # read exactly as they did — voice reduces to text before it ever gets here.
+    user_input = user_message if isinstance(user_message, UserInput) else UserInput(user_message)
+
     thread_id = thread_id or user_key
     config = {
         "configurable": {"thread_id": thread_id},
@@ -90,11 +182,12 @@ def run_graph(
     }
     result = graph.invoke(
         {
-            "messages": [{"role": "user", "content": user_message}],
+            "messages": [{"role": "user", "content": _opening_text(user_input)}],
             "system_prompt": system_prompt,
             "tools": COACH_TOOLS if tools is None else tools,
             "user_key": user_key,
             "response": "",
+            "image_block": _image_block(user_input.image) if user_input.image else None,
         },
         config=config,
     )

@@ -1,13 +1,13 @@
 import hmac
 import logging
 
-from telegram import Update
+from telegram import PhotoSize, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from coach_agent import profile_store
 from coach_agent.config import INVITE_CODE, TELEGRAM_BOT_TOKEN
-from coach_agent.graph import run_graph
+from coach_agent.graph import ImageAttachment, UserInput, run_graph
 from coach_agent.prompt_assembly import build_intake_prompt, build_system_prompt
 from coach_agent.tools import INTAKE_TOOLS
 from coach_agent.transcription import MAX_AUDIO_SECONDS, TranscriptionError, transcribe
@@ -38,10 +38,18 @@ _VOICE_TOO_LONG_REPLY = (
 )
 _NOTHING_HEARD_REPLY = "לא הצלחתי לשמוע כלום בהקלטה. אפשר לנסות שוב?"
 _VOICE_FAILED_REPLY = "משהו השתבש לי בהאזנה להקלטה. אפשר לנסות שוב, או פשוט לכתוב לי."
+_PHOTO_FAILED_REPLY = "משהו השתבש לי בפתיחת התמונה. אפשר לנסות לשלוח אותה שוב?"
 _UNSUPPORTED_MESSAGE_REPLY = (
-    "אני יודע לקרוא טקסט ולהקשיב להודעות קוליות — את זה עוד לא. "
-    "אפשר לכתוב לי, או להקליט."
+    "אני יודע לקרוא טקסט, להקשיב להודעות קוליות ולהסתכל על תמונות — את זה עוד לא. "
+    "אפשר לכתוב לי, להקליט, או לצלם."
 )
+
+# Telegram offers the same photo in a handful of sizes, and the cost of one is
+# roughly width × height / 750 tokens — a 1280px plate is ~1200 tokens, against
+# ~26 for a typical text message. So the largest is not taken by default: this
+# is the narrowest width still worth looking at a plate of food through, and
+# anything above it is detail nobody is billed for twice.
+_MIN_PHOTO_WIDTH = 512
 
 
 def _user_key(update: Update) -> str:
@@ -54,7 +62,7 @@ def _user_key(update: Update) -> str:
     return f"{_CHANNEL}_{update.effective_user.id}"
 
 
-def _reply_for(user_key: str, text: str) -> str:
+def _reply_for(user_key: str, message: str | UserInput) -> str:
     """The answer to one message, whichever mode this user is in.
 
     Every route out of here is decided by the status in the user's own file, so
@@ -82,13 +90,13 @@ def _reply_for(user_key: str, text: str) -> str:
         # summary, which is why they were written.
         return run_graph(
             user_key,
-            text,
+            message,
             build_intake_prompt(user_key),
             tools=INTAKE_TOOLS,
             thread_id=f"{user_key}:intake",
         )
 
-    return run_graph(user_key, text, build_system_prompt(user_key))
+    return run_graph(user_key, message, build_system_prompt(user_key))
 
 
 def _admit(user_key: str, args: list[str]) -> bool:
@@ -126,6 +134,59 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(_reply_for(_user_key(update), update.message.text))
+
+
+def _pick_photo_size(sizes: tuple[PhotoSize, ...]) -> PhotoSize:
+    """The cheapest rendition that is still worth showing the model.
+
+    `update.message.photo` arrives ascending by size, so this is the first one
+    wide enough — falling back to the largest when even that is small, because a
+    thumbnail the user actually sent is better than refusing to look.
+    """
+    for size in sizes:
+        if size.width >= _MIN_PHOTO_WIDTH:
+            return size
+    return sizes[-1]
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_key = _user_key(update)
+    # Same order as the voice path, for the same reason: a stranger's photo
+    # costs no transfer and no tokens, and a photo cannot carry an invite code.
+    if profile_store.read_status(user_key) is None:
+        logger.warning("Photo from %s, who has no profile and no invite.", user_key)
+        await update.message.reply_text(_UNKNOWN_USER_REPLY)
+        return
+
+    photo = _pick_photo_size(update.message.photo)
+    try:
+        file = await context.bot.get_file(photo.file_id)
+        image = bytes(await file.download_as_bytearray())
+    except TelegramError:
+        logger.exception("Could not download photo from %s", user_key)
+        await update.message.reply_text(_PHOTO_FAILED_REPLY)
+        return
+
+    # The dimensions are the price tag — roughly width × height / 750 tokens —
+    # and this line is what makes the choice above measurable against LangSmith
+    # rather than assumed.
+    logger.info("Photo from %s: %sx%s", user_key, photo.width, photo.height)
+
+    # A photo of a meal almost always comes with a caption ("זה מה שאכלתי"),
+    # and the two are one message: they are handed over together, and the graph
+    # decides what that becomes.
+    await update.message.reply_text(
+        _reply_for(
+            user_key,
+            UserInput(
+                text=update.message.caption or "",
+                # Telegram re-encodes every photo it serves as JPEG, whatever
+                # was uploaded, so this is a fact about the platform and not a
+                # guess about the file.
+                image=ImageAttachment(data=image, media_type="image/jpeg"),
+            ),
+        )
+    )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -189,6 +250,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     # Registered last on purpose: dispatch stops at the first handler that
     # matches, so this one catches whatever the handlers above did not — which
     # until now was answered with silence.
