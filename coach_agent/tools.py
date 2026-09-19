@@ -307,6 +307,104 @@ def _run_get_measurements(tool_input: dict, context: ToolContext) -> str:
     return json.dumps(readings, ensure_ascii=False)
 
 
+# --- What a write looks like before it happens --------------------------------
+
+# The trainee approves a row, not a sentence. The model's own wording of the same
+# meal is written to be readable — "בערך 550 עד 700 קלוריות" — while what reaches
+# the table is one number it picked out of that range. So these render the tool
+# input itself: whatever the preview says is exactly what the INSERT will carry.
+
+_ITEM_SHAPES = {
+    "grams": "{} גרם",
+    "calories": '{} קק"ל',
+    "protein": "חלבון {}",
+    "carbs": "פחמימות {}",
+    "fat": "שומן {}",
+}
+_NUTRITION_FIELDS = ("calories", "protein", "carbs", "fat")
+_NO_NUTRITION_NOTE = "בלי ערכים תזונתיים"
+
+
+def _number(value: float | int) -> str:
+    """The figure as a person reads it: 155 and 82.3, never 155.0."""
+    number = float(value)
+    return str(int(number)) if number.is_integer() else f"{number:g}"
+
+
+def _describe_time(value: str | None) -> str:
+    """The stamp the row will carry — but only when it was actually said.
+
+    A missing timestamp means "now", and now is the moment the INSERT runs, not
+    the moment this preview was written. A clock reading here would promise a
+    minute that an approval, arriving whenever it arrives, does not keep.
+    """
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(value).strftime("%d/%m %H:%M")
+    except ValueError:
+        # Unparseable is still worth showing: log_meal stores what it was given,
+        # and a malformed stamp is precisely the thing worth catching here.
+        return value
+
+
+def _describe_item(raw: dict) -> str:
+    parts = [f"• {str(raw.get('item') or '').strip() or 'פריט ללא שם'}"]
+    parts += [
+        shape.format(_number(raw[field]))
+        for field, shape in _ITEM_SHAPES.items()
+        if raw.get(field) is not None
+    ]
+    # Said out loud, because an item stored with empty nutrition columns is a row
+    # every later SUM skips in silence — and the moment to catch that is before
+    # it is approved, not when the daily total comes back too low.
+    if all(raw.get(field) is None for field in _NUTRITION_FIELDS):
+        parts.append(_NO_NUTRITION_NOTE)
+    if raw.get("notes"):
+        parts.append(str(raw["notes"]))
+    return " · ".join(parts)
+
+
+def _describe_meal(tool_input: dict) -> str:
+    items = tool_input.get("items") or []
+    heading = " · ".join(
+        part
+        for part in (
+            f"ארוחת {tool_input['meal_type']}" if tool_input.get("meal_type") else "",
+            _describe_time(tool_input.get("eaten_at")),
+        )
+        if part
+    )
+    lines = [_describe_item(raw) for raw in items] or ["(לא צוינו פריטים)"]
+    calories = sum(item.get("calories") or 0 for item in items)
+    # Only worth a line when there is arithmetic to check. One item's total is
+    # the item.
+    if len(items) > 1 and calories:
+        lines.append(f'סה"כ {_number(calories)} קק"ל')
+    return "\n".join([heading, *lines] if heading else lines)
+
+
+def _describe_measurement(tool_input: dict) -> str:
+    metric = tool_input.get("metric")
+    value = tool_input.get("value")
+    parts = [
+        " ".join(
+            part
+            for part in (
+                f"{log_store.METRIC_LABELS.get(metric, metric)}:",
+                _number(value) if value is not None else "?",
+                log_store.METRIC_UNITS.get(metric, ""),
+            )
+            if part
+        )
+    ]
+    if tool_input.get("measured_at"):
+        parts.append(_describe_time(tool_input["measured_at"]))
+    if tool_input.get("notes"):
+        parts.append(str(tool_input["notes"]))
+    return " · ".join(parts)
+
+
 # --- Intake: the two documents -----------------------------------------------
 
 _SAVE_SECTION_TOOL = {
@@ -575,6 +673,26 @@ _HANDLERS = {
     _LOG_MEASUREMENT_TOOL["name"]: _run_log_measurement,
     _MEASUREMENTS_TOOL["name"]: _run_get_measurements,
 }
+
+
+# The tools that may not run until the trainee has said yes, and how each one
+# shows itself while asking. One map and not two: a gated tool with no preview
+# would stop the conversation to ask about a JSON blob, and a preview for a tool
+# nothing stops is code no one ever reads. Membership here is the whole contract
+# — graph.py asks `needs_confirmation` and never learns which tools exist.
+_DESCRIBERS = {
+    _LOG_MEAL_TOOL["name"]: _describe_meal,
+    _LOG_MEASUREMENT_TOOL["name"]: _describe_measurement,
+}
+
+
+def needs_confirmation(name: str) -> bool:
+    return name in _DESCRIBERS
+
+
+def describe_call(name: str, tool_input: dict) -> str:
+    """What this call is about to write, in the trainee's own language."""
+    return _DESCRIBERS[name](tool_input)
 
 
 def run_tool(name: str, tool_input: dict, context: ToolContext) -> str:
