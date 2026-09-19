@@ -1,13 +1,20 @@
 import hmac
 import logging
 
-from telegram import PhotoSize, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, PhotoSize, Update
 from telegram.error import TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from coach_agent import profile_store
 from coach_agent.config import INVITE_CODE, TELEGRAM_BOT_TOKEN
-from coach_agent.graph import ImageAttachment, UserInput, run_graph
+from coach_agent.graph import AgentReply, ImageAttachment, UserInput, resume_graph, run_graph
 from coach_agent.prompt_assembly import build_intake_prompt, build_system_prompt
 from coach_agent.tools import INTAKE_TOOLS
 from coach_agent.transcription import MAX_AUDIO_SECONDS, TranscriptionError, transcribe
@@ -43,6 +50,22 @@ _UNSUPPORTED_MESSAGE_REPLY = (
     "אני יודע לקרוא טקסט, להקשיב להודעות קוליות ולהסתכל על תמונות — את זה עוד לא. "
     "אפשר לכתוב לי, להקליט, או לצלם."
 )
+_ALREADY_HANDLED_REPLY = "הרישום הזה כבר טופל."
+
+# The two answers to "לרשום את זה ביומן?". A button and not a typed "כן",
+# because the value has to come back as a decision and not as a sentence
+# somebody has to interpret — and the one interpreting would be the same model
+# whose proposal is being checked.
+_APPROVE_DATA = "log:ok"
+_REJECT_DATA = "log:no"
+_APPROVAL_KEYBOARD = InlineKeyboardMarkup(
+    [
+        [
+            InlineKeyboardButton("✅ לרשום", callback_data=_APPROVE_DATA),
+            InlineKeyboardButton("❌ לא", callback_data=_REJECT_DATA),
+        ]
+    ]
+)
 
 # Telegram offers the same photo in a handful of sizes, and the cost of one is
 # roughly width × height / 750 tokens — a 1280px plate is ~1200 tokens, against
@@ -62,7 +85,19 @@ def _user_key(update: Update) -> str:
     return f"{_CHANNEL}_{update.effective_user.id}"
 
 
-def _reply_for(user_key: str, message: str | UserInput) -> str:
+async def _send(message, reply: AgentReply) -> None:
+    """Put one answer on the wire, with the buttons if it is waiting on them.
+
+    Every path out of the agent goes through here, so a reply that stops for
+    approval cannot reach the user stripped of the only way to give it.
+    """
+    await message.reply_text(
+        reply.text,
+        reply_markup=_APPROVAL_KEYBOARD if reply.awaiting_approval else None,
+    )
+
+
+def _reply_for(user_key: str, message: str | UserInput) -> AgentReply:
     """The answer to one message, whichever mode this user is in.
 
     Every route out of here is decided by the status in the user's own file, so
@@ -76,13 +111,13 @@ def _reply_for(user_key: str, message: str | UserInput) -> str:
         # /start carrying the invite code — so an ordinary message from a
         # stranger cannot open the door by arriving.
         logger.warning("Message from %s, who has no profile and no invite.", user_key)
-        return _UNKNOWN_USER_REPLY
+        return AgentReply(_UNKNOWN_USER_REPLY)
 
     if status == profile_store.STATUS_BLOCKED:
         # Answered without reaching the model at all: the intake stopped on a
         # flag the agent is not equipped to handle, and another conversation
         # about it is exactly what should not happen next.
-        return _BLOCKED_REPLY
+        return AgentReply(_BLOCKED_REPLY)
 
     if status == profile_store.STATUS_INTAKE:
         # Its own thread, so the coach does not carry the whole interview in
@@ -129,11 +164,33 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     # For everyone else /start is the first message of the intake, not a
     # greeting to answer before it: it is how most first conversations open.
-    await update.message.reply_text(_reply_for(user_key, "/start"))
+    await _send(update.message, _reply_for(user_key, "/start"))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(_reply_for(_user_key(update), update.message.text))
+    await _send(update.message, _reply_for(_user_key(update), update.message.text))
+
+
+async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A press on ✅ or ❌ — the only thing that lets a write actually run."""
+    query = update.callback_query
+    # Answered first and emptily: until it is, Telegram leaves a spinner on the
+    # button, and what comes next is an LLM call measured in seconds.
+    await query.answer()
+    try:
+        # Before the work, not after it, so the window in which the same
+        # approval can be pressed twice is as short as the API allows.
+        await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError:
+        logger.exception("Could not clear the approval buttons for %s", _user_key(update))
+
+    reply = resume_graph(_user_key(update), approved=query.data == _APPROVE_DATA)
+    if reply is None:
+        # The graph is not holding anything: a button pressed twice, or one left
+        # over from before a restart emptied the checkpointer.
+        await query.message.reply_text(_ALREADY_HANDLED_REPLY)
+        return
+    await _send(query.message, reply)
 
 
 def _pick_photo_size(sizes: tuple[PhotoSize, ...]) -> PhotoSize:
@@ -175,7 +232,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # A photo of a meal almost always comes with a caption ("זה מה שאכלתי"),
     # and the two are one message: they are handed over together, and the graph
     # decides what that becomes.
-    await update.message.reply_text(
+    await _send(
+        update.message,
         _reply_for(
             user_key,
             UserInput(
@@ -185,7 +243,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 # guess about the file.
                 image=ImageAttachment(data=image, media_type="image/jpeg"),
             ),
-        )
+        ),
     )
 
 
@@ -238,7 +296,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # a perfectly coherent reply about something the user never said, with
     # nothing on screen to explain where it came from.
     await update.message.reply_text(f"🎤 שמעתי: {text}")
-    await update.message.reply_text(_reply_for(user_key, text))
+    await _send(update.message, _reply_for(user_key, text))
 
 
 async def handle_unsupported(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -251,6 +309,9 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    # Its own update type, not a message, so it is matched before the catch-all
+    # below ever looks at it.
+    app.add_handler(CallbackQueryHandler(handle_approval))
     # Registered last on purpose: dispatch stops at the first handler that
     # matches, so this one catches whatever the handlers above did not — which
     # until now was answered with silence.

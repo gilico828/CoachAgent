@@ -41,6 +41,16 @@ METRIC_UNITS = {
     "body_fat": "%",
 }
 
+# The same vocabulary in the trainee's language, for the one place a metric is
+# shown to a person rather than stored: the confirmation asked before it is
+# written. Here and not in the presentation layer, so that adding a metric is
+# still one edit — a key added to METRIC_UNITS alone would reach the trainee as
+# "body_fat: 19%".
+METRIC_LABELS = {
+    "weight": "משקל",
+    "body_fat": "אחוז שומן",
+}
+
 # Columns one logged item may fill. Anything else the model sends is dropped
 # rather than stored, the same way write_coach_preferences filters its input: the
 # schema describes what a well-behaved call looks like, and this decides what a

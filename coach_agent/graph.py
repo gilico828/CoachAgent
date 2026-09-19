@@ -5,9 +5,16 @@ from typing import Annotated, TypedDict
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
+from langgraph.types import Command, interrupt
 
 from coach_agent.agent import call_agent, extract_text
-from coach_agent.tools import COACH_TOOLS, ToolContext, run_tool
+from coach_agent.tools import (
+    COACH_TOOLS,
+    ToolContext,
+    describe_call,
+    needs_confirmation,
+    run_tool,
+)
 
 
 @dataclass(frozen=True)
@@ -122,14 +129,67 @@ def _call_llm(state: GraphState) -> GraphState:
     return update
 
 
+_APPROVE = "approve"
+
+# What the model is told when a write it proposed did not happen. It reads the
+# outcome as a tool result like any other, so the alternative — silence, or a
+# result that says "נרשם" — is a coach that reports a row nobody stored.
+_REJECTED_RESULT = (
+    "המתאמן לא אישר את הרישום, ולא נשמר כלום. "
+    "לא לנסות לרשום את אותו הדבר שוב — לשאול מה לתקן, או להמשיך בשיחה."
+)
+_REPLIED_RESULT = (
+    'המתאמן לא אישר את הרישום. במקום ללחוץ על כפתור הוא כתב: "{text}". '
+    "לא נשמר כלום. אם זה תיקון — להציע את הרישום מחדש עם הערכים המתוקנים."
+)
+
+
+def _assistant_text(message: dict) -> str:
+    """What the model said in the turn it also asked to write something.
+
+    Until now this was dropped on the floor: a turn holding a tool_use never
+    reaches the user, so its text blocks went nowhere. It is the one sentence
+    that explains the numbers underneath it, so the approval carries it.
+    """
+    return "\n".join(
+        block["text"] for block in message["content"] if block.get("type") == "text"
+    ).strip()
+
+
+def _refusal(decision: dict) -> str:
+    if decision.get("action") == "reply":
+        return _REPLIED_RESULT.format(text=decision.get("text", ""))
+    return _REJECTED_RESULT
+
+
 def _run_tool(state: GraphState) -> GraphState:
     last_message = state["messages"][-1]
+    calls = [block for block in last_message["content"] if block.get("type") == "tool_use"]
+    gated = [block for block in calls if needs_confirmation(block["name"])]
+
+    # Asked before a single handler runs, and not only before the gated ones:
+    # `interrupt` resumes by replaying this node from its first line, so a tool
+    # that ran above it would run a second time on the way back.
+    decision = (
+        interrupt(
+            {
+                "text": _assistant_text(last_message),
+                "rows": [describe_call(b["name"], b.get("input") or {}) for b in gated],
+            }
+        )
+        if gated
+        else {"action": _APPROVE}
+    )
+
+    gated_ids = {block["id"] for block in gated}
+    approved = decision.get("action") == _APPROVE
     context = ToolContext(user_key=state["user_key"])
     tool_results = []
-    for block in last_message["content"]:
-        if block.get("type") != "tool_use":
-            continue
-        content = run_tool(block["name"], block.get("input") or {}, context)
+    for block in calls:
+        if block["id"] in gated_ids and not approved:
+            content = _refusal(decision)
+        else:
+            content = run_tool(block["name"], block.get("input") or {}, context)
         tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": content})
     return {"messages": [{"role": "user", "content": tool_results}]}
 
@@ -152,13 +212,63 @@ _graph_builder.add_edge("run_tool", "call_llm")
 graph = _graph_builder.compile(checkpointer=MemorySaver())
 
 
+@dataclass(frozen=True)
+class AgentReply:
+    """One answer on its way back to the channel layer.
+
+    A turn now ends in one of two ways — an answer, or a question the graph is
+    parked on — and the difference decides whether the message carries buttons.
+    Said in the return value rather than left for the channel to infer from the
+    text, which would be guessing at Hebrew.
+    """
+
+    text: str
+    awaiting_approval: bool = False
+
+
+def _config(thread_id: str) -> dict:
+    return {
+        "configurable": {"thread_id": thread_id},
+        # LangSmith groups traces into a thread by this metadata key, which is what
+        # turns per-message cost into per-conversation cost. It is the user key, so a
+        # thread is that user's whole history — nothing marks a conversation as over.
+        "metadata": {"thread_id": thread_id},
+    }
+
+
+def _pending(config: dict) -> dict | None:
+    """The approval this thread is parked on, if it is parked on one.
+
+    `get_state` on a thread that has never run returns an empty snapshot rather
+    than raising, so this answers for a first-ever message too.
+    """
+    interrupts = graph.get_state(config).interrupts
+    return interrupts[0].value if interrupts else None
+
+
+def _approval_text(value: dict) -> str:
+    """The model's sentence, then the rows it is asking to write underneath it."""
+    return "\n\n".join(part for part in (value["text"], "\n".join(value["rows"])) if part)
+
+
+def _invoke(config: dict, payload: dict | Command) -> AgentReply:
+    result = graph.invoke(payload, config=config)
+    # Asked of the checkpointer and not of `result`: the key an interrupted run
+    # adds to its return value was made private in LangGraph 1.0, while the
+    # snapshot is the supported way to ask the same question.
+    pending = _pending(config)
+    if pending is not None:
+        return AgentReply(_approval_text(pending), awaiting_approval=True)
+    return AgentReply(result["response"])
+
+
 def run_graph(
     user_key: str,
     user_message: str | UserInput,
     system_prompt: str,
     tools: list[dict] | None = None,
     thread_id: str | None = None,
-) -> str:
+) -> AgentReply:
     """Run one turn for the user identified by `user_key`.
 
     The key arrives already built by the channel layer, so nothing here knows
@@ -172,15 +282,17 @@ def run_graph(
     # read exactly as they did — voice reduces to text before it ever gets here.
     user_input = user_message if isinstance(user_message, UserInput) else UserInput(user_message)
 
-    thread_id = thread_id or user_key
-    config = {
-        "configurable": {"thread_id": thread_id},
-        # LangSmith groups traces into a thread by this metadata key, which is what
-        # turns per-message cost into per-conversation cost. It is the user key, so a
-        # thread is that user's whole history — nothing marks a conversation as over.
-        "metadata": {"thread_id": thread_id},
-    }
-    result = graph.invoke(
+    config = _config(thread_id or user_key)
+    if _pending(config) is not None:
+        # A message typed while an approval is open is not a new turn. The graph
+        # is parked mid-node holding a row it has not written, and whatever was
+        # just typed is about that row — "בלי הלחם" has to reach the model as an
+        # answer to the question it asked, not as a fresh remark it never linked
+        # to it. It is not an approval either: those arrive as a button.
+        return _invoke(config, Command(resume={"action": "reply", "text": user_input.text}))
+
+    return _invoke(
+        config,
         {
             "messages": [{"role": "user", "content": _opening_text(user_input)}],
             "system_prompt": system_prompt,
@@ -189,6 +301,17 @@ def run_graph(
             "response": "",
             "image_block": _image_block(user_input.image) if user_input.image else None,
         },
-        config=config,
     )
-    return result["response"]
+
+
+def resume_graph(user_key: str, approved: bool, thread_id: str | None = None) -> AgentReply | None:
+    """Answer the open approval on this thread, or None if there is none left.
+
+    None is the ordinary case of a button pressed twice, or of one pressed after
+    the conversation moved on — the first press consumed the interrupt, and
+    resuming a thread that is not parked would start it over.
+    """
+    config = _config(thread_id or user_key)
+    if _pending(config) is None:
+        return None
+    return _invoke(config, Command(resume={"action": _APPROVE if approved else "reject"}))
