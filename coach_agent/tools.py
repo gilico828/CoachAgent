@@ -6,27 +6,34 @@ and nowhere else.
 """
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from datetime import datetime
 
 import httpx
 
-from coach_agent import log_store, profile_store
+from coach_agent import log_store, profile_store, reports
 from coach_agent.clock import TIMEZONE as _TIMEZONE
 from coach_agent.config import USDA_API_KEY
 
 
 @dataclass(frozen=True)
 class ToolContext:
-    """Who this tool call is being run for.
+    """Who this tool call is being run for, and where a tool leaves a file.
 
     Every tool used to be a pure function of its input, which was true right up
     until one of them had to write to a particular person's file. Passed to every
     handler rather than only the ones that care, so the day a second field is
     needed it is added here and nowhere else.
+
+    `outbox` is that day. A report is not an answer to the model — it is a page
+    for the person — so it does not belong in the string a handler returns.
+    `frozen` freezes the binding and not the list: a handler appends, and the
+    graph hands whatever collected here to the channel layer once the turn ends.
     """
 
     user_key: str
+    outbox: list[reports.Document] = field(default_factory=list)
 
 # --- Nutrition (USDA FoodData Central) ---------------------------------------
 
@@ -305,6 +312,101 @@ def _run_get_measurements(tool_input: dict, context: ToolContext) -> str:
     if not readings:
         return f"אין מדידות של {metric} ליומן הזה."
     return json.dumps(readings, ensure_ascii=False)
+
+
+# --- Reports: the two pages the trainee can be handed -------------------------
+
+# The tool result is an instruction and not data, the same way _run_finish_intake
+# uses one. Without it the model reads its own report back into the chat, line by
+# line, and the file it just sent becomes the second copy of a message nobody
+# needed twice.
+_REPORT_SENT = (
+    "הדף נשלח למתאמן והוא רואה אותו עכשיו. "
+    "לכתוב משפט או שניים על מה שבולט בו — בלי לחזור על המספרים שכתובים בו ממילא."
+)
+
+_MEASUREMENTS_REPORT_TOOL = {
+    "name": "send_measurements_report",
+    "description": (
+        "שולח למתאמן דף מעקב: גרף משקל וגרף אחוז שומן לאורך זמן, מספרי מפתח, "
+        "וקו יעד אם רשום כזה בפרופיל. לקרוא כשמבקשים לראות התקדמות, גרף או מגמה — "
+        "מגמה היא גרף ולא משפט. הדף נשלח כקובץ נפרד, ולכן אין צורך לשכפל אותו בהודעה."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "days": {
+                "type": "integer",
+                "description": "כמה ימים אחורה. להשמיט כדי לקבל את כל ההיסטוריה.",
+            }
+        },
+    },
+}
+
+_FOOD_REPORT_TOOL = {
+    "name": "send_food_day_report",
+    "description": (
+        "שולח למתאמן דף סיכום של יום אכילה אחד: הארוחות, הפריטים, הקלוריות המשוערות "
+        "וההתפלגות לחלבון/פחמימות/שומן. לקרוא כשמבקשים לראות את היום או סיכום שלו. "
+        "לשאלה נקודתית (\"כמה חלבון אכלתי?\") יש get_food_log — לא צריך דף בשביל מספר אחד."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "date": {
+                "type": "string",
+                "description": "תאריך בפורמט YYYY-MM-DD. ברירת מחדל: היום.",
+            }
+        },
+    },
+}
+
+# The date reaches the filename, and it came from the model. Nothing downstream
+# would be harmed by a strange one, but a file called `2026-09-19/..` landing in
+# somebody's downloads folder is not worth finding out about.
+_FILENAME_SAFE = re.compile(r"[^0-9-]")
+
+
+def _run_measurements_report(tool_input: dict, context: ToolContext) -> str:
+    days = tool_input.get("days")
+    weight = log_store.measurements_for(context.user_key, "weight", days=days)
+    body_fat = log_store.measurements_for(context.user_key, "body_fat", days=days)
+    if not weight and not body_fat:
+        # An empty page is worse than no page, so the refusal is a sentence the
+        # coach can use — the same choice _run_get_food_log makes for an empty day.
+        return (
+            "אין מדידות להראות, ולכן לא נשלח דף. "
+            "אפשר להציע להישקל, או לשאול מתי נמדד לאחרונה."
+        )
+
+    page = reports.render_measurements(
+        weight, body_fat, goal_weight=profile_store.goal_weight(context.user_key)
+    )
+    context.outbox.append(
+        reports.Document(
+            filename=f"weight-{get_current_datetime()['date']}.html",
+            data=page.encode("utf-8"),
+            media_type="text/html",
+        )
+    )
+    return _REPORT_SENT
+
+
+def _run_food_day_report(tool_input: dict, context: ToolContext) -> str:
+    date = tool_input.get("date") or get_current_datetime()["date"]
+    day = log_store.food_log_for_day(context.user_key, date)
+    if not day["items"]:
+        return f"אין רישומים ביומן בתאריך {date}, ולכן לא נשלח דף."
+
+    page = reports.render_food_day(day)
+    context.outbox.append(
+        reports.Document(
+            filename=f"food-{_FILENAME_SAFE.sub('', date)[:10] or 'day'}.html",
+            data=page.encode("utf-8"),
+            media_type="text/html",
+        )
+    )
+    return _REPORT_SENT
 
 
 # --- What a write looks like before it happens --------------------------------
@@ -646,7 +748,13 @@ COACH_TOOLS = [
     _FOOD_LOG_TOOL,
     _LOG_MEASUREMENT_TOOL,
     _MEASUREMENTS_TOOL,
+    _MEASUREMENTS_REPORT_TOOL,
+    _FOOD_REPORT_TOOL,
 ]
+# The reports are deliberately not in INTAKE_TOOLS: during the interview there
+# is nothing logged yet to draw, and an empty chart is a bad first impression of
+# a coach who has not been told anything.
+#
 # update_coach_preferences is in both sets. During the intake it is what saves
 # the coach's name the moment it is chosen, in the opening, rather than holding
 # it in the conversation until finish_intake — a name picked and then lost to a
@@ -672,6 +780,8 @@ _HANDLERS = {
     _FOOD_LOG_TOOL["name"]: _run_get_food_log,
     _LOG_MEASUREMENT_TOOL["name"]: _run_log_measurement,
     _MEASUREMENTS_TOOL["name"]: _run_get_measurements,
+    _MEASUREMENTS_REPORT_TOOL["name"]: _run_measurements_report,
+    _FOOD_REPORT_TOOL["name"]: _run_food_day_report,
 }
 
 

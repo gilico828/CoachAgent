@@ -45,7 +45,7 @@ def graph_calls(monkeypatch):
 def test_a_stranger_is_refused_without_reaching_the_model(graph_calls):
     reply = main._reply_for(_USER, "היי")
 
-    assert reply == main._UNKNOWN_USER_REPLY
+    assert reply.text == main._UNKNOWN_USER_REPLY
     assert graph_calls == []
 
 
@@ -126,7 +126,7 @@ def test_a_blocked_intake_is_answered_without_calling_the_model(graph_calls):
 
     reply = main._reply_for(_USER, "אפשר תוכנית תזונה?")
 
-    assert reply == main._BLOCKED_REPLY
+    assert reply.text == main._BLOCKED_REPLY
     assert graph_calls == []
 
 
