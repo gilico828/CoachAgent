@@ -17,6 +17,7 @@
 - [מסמך נושאי לימוד.md](מסמך%20נושאי%20לימוד.md) — מיפוי נושאי AI Engineering שנלמדים דרך הפרויקט (כולל LangGraph), לפי Phase ולפי נושאים חוצי-פרויקט; מסומן ✅ ככל שמתקדמים.
 - [coach_agent/prompts/intake_instructions.md](coach_agent/prompts/intake_instructions.md) — שכבת ההוראות של הסוכן במצב אינטק (מחליפה את `general_instructions.md`, לא רצה לצידה): מבנה שלושת הבלוקים, מוסכמת `לבירור`/`לא ידוע`, כללי גזירת מסמך ההעדפות, וקווים אדומים.
 - [coach_agent/prompts/template_trainee.md](coach_agent/prompts/template_trainee.md) — התבנית הריקה של פרופיל המתאמן. הכותרות שלה הן החוזה של הכלי `save_trainee_section`.
+- [coach_agent/templates/](coach_agent/templates/) — שתי התבניות של הדפים שהסוכן שולח למתאמן (`measurements.html` — משקל ואחוז שומן; `food_day.html` — יום אכילה אחד). הן העיצוב, ו-`coach_agent/reports.py` ממלא בהן רק את הנתונים. מנגנון ההצבה הוא `string.Template` ולא `str.format`, כי ה-CSS מלא ב-`{`. אפס משאבים חיצוניים ואפס JS — הקובץ נשלח כמו שהוא בטלגרם.
 - [מסמך מסד נתונים.md](מסמך%20מסד%20נתונים.md) — ההחלטות מאחורי שכבת הנתונים הטבלאית (Phase 3): למה DB אחד משותף ולא אחד לכל מתאמן, מי מחזיק את אוצר המילים של השדות (ולמה לא המודל), כלל הקידום של `notes` לעמודה, ולמה זמן נשמר מקומי ולא UTC. הסכמה עצמה חיה ב-`coach_agent/log_store.py`.
 - [DEPLOY.md](DEPLOY.md) — runbook לפריסה: התחברות ל-EC2, מה יושב על השרת, עדכון גרסה, לוגים, והתקלות הצפויות. נכתב ב-Phase 4.
 
