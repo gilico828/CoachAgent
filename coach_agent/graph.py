@@ -3,11 +3,13 @@ import operator
 from dataclasses import dataclass
 from typing import Annotated, TypedDict
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
 from coach_agent.agent import call_agent, extract_text
+from coach_agent.reports import Document
 from coach_agent.tools import (
     COACH_TOOLS,
     ToolContext,
@@ -162,7 +164,10 @@ def _refusal(decision: dict) -> str:
     return _REJECTED_RESULT
 
 
-def _run_tool(state: GraphState) -> GraphState:
+def _run_tool(state: GraphState, config: RunnableConfig) -> GraphState:
+    # The annotation is load-bearing, not decoration: LangGraph decides whether
+    # to hand a node the config by reading this type, and a plain `dict` gets a
+    # warning at build time and a TypeError at run time.
     last_message = state["messages"][-1]
     calls = [block for block in last_message["content"] if block.get("type") == "tool_use"]
     gated = [block for block in calls if needs_confirmation(block["name"])]
@@ -183,7 +188,7 @@ def _run_tool(state: GraphState) -> GraphState:
 
     gated_ids = {block["id"] for block in gated}
     approved = decision.get("action") == _APPROVE
-    context = ToolContext(user_key=state["user_key"])
+    context = ToolContext(user_key=state["user_key"], outbox=config["configurable"]["outbox"])
     tool_results = []
     for block in calls:
         if block["id"] in gated_ids and not approved:
@@ -220,15 +225,37 @@ class AgentReply:
     parked on — and the difference decides whether the message carries buttons.
     Said in the return value rather than left for the channel to infer from the
     text, which would be guessing at Hebrew.
+
+    `documents` is the outbound mirror of `UserInput.image`: files a tool built
+    for the person, carried out in the same shape they came in — bytes, a type
+    and a name — so the channel layer stays the only thing that knows how its
+    own platform sends a file.
     """
 
     text: str
     awaiting_approval: bool = False
+    documents: tuple[Document, ...] = ()
 
 
 def _config(thread_id: str) -> dict:
     return {
-        "configurable": {"thread_id": thread_id},
+        "configurable": {
+            "thread_id": thread_id,
+            # What the tools made for the person rather than for the model.
+            #
+            # It rides on the config and not in GraphState because state is
+            # checkpointed: as an append-only channel every rendered page would
+            # be kept for the life of the thread, growing ~10KB per report and
+            # re-delivered on every later turn, and as an overwritten one a
+            # second report in the same turn would erase the first. The config
+            # is built per call below and thrown away with it, which is exactly
+            # the lifetime a file being sent once should have.
+            #
+            # ⚠️ This holds because MemorySaver never serialises the config. If
+            # the checkpointer is ever swapped for SqliteSaver (open question in
+            # מסמך TODO.md), check that assumption before trusting this.
+            "outbox": [],
+        },
         # LangSmith groups traces into a thread by this metadata key, which is what
         # turns per-message cost into per-conversation cost. It is the user key, so a
         # thread is that user's whole history — nothing marks a conversation as over.
@@ -253,13 +280,17 @@ def _approval_text(value: dict) -> str:
 
 def _invoke(config: dict, payload: dict | Command) -> AgentReply:
     result = graph.invoke(payload, config=config)
+    # Whatever the tools left behind this run. Read on both paths and not only
+    # the answering one: a turn that ends parked has produced nothing yet today,
+    # but a report tool added beside a gated write must not depend on that.
+    documents = tuple(config["configurable"]["outbox"])
     # Asked of the checkpointer and not of `result`: the key an interrupted run
     # adds to its return value was made private in LangGraph 1.0, while the
     # snapshot is the supported way to ask the same question.
     pending = _pending(config)
     if pending is not None:
-        return AgentReply(_approval_text(pending), awaiting_approval=True)
-    return AgentReply(result["response"])
+        return AgentReply(_approval_text(pending), awaiting_approval=True, documents=documents)
+    return AgentReply(result["response"], documents=documents)
 
 
 def run_graph(

@@ -11,6 +11,7 @@ out of the instruction layer — every field but two is an enum.
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -181,6 +182,47 @@ def untouched_sections(user_key: str) -> list[str]:
 def open_fields(user_key: str) -> list[str]:
     """Sections that still carry at least one `לבירור`, for the closing message."""
     return [key for key in REQUIRED_SECTIONS if _UNASKED in read_section(user_key, key)]
+
+
+# The one number the report needs that has no column anywhere. A goal is not a
+# measurement — nobody stood on a scale and got 83 — so it never entered the
+# measurements table, and the intake wrote it as a sentence like everything else
+# in the profile.
+_GOAL_WEIGHT_LABEL = "משקל יעד"
+_GOAL_WEIGHT_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+# A goal outside this range is not a goal, it is a year or a phone number that
+# happened to sit on the same line. Guessing wrong here draws a target line
+# across a chart and tells somebody they are 1,940 kg from their goal.
+_PLAUSIBLE_WEIGHT = (20.0, 400.0)
+
+
+def goal_weight(user_key: str) -> float | None:
+    """The trainee's target weight in kg, or None if they never named one.
+
+    Parsed out of prose rather than read from a field, because prose is what is
+    there: the profile is written for a person to correct by hand, and real
+    files are inconsistent about it — `- **משקל יעד:** 83 ק"ג` on one line and
+    `- אחוז שומן : 37%` on the next. So this is deliberately forgiving about
+    everything except the number, and gives up quietly rather than guessing:
+    a missing goal costs the report one dashed line, and a wrong one is worse
+    than none.
+    """
+    try:
+        body = read_section(user_key, "נתונים")
+    except (OSError, SectionNotFound, KeyError):
+        return None
+
+    for line in body.splitlines():
+        if _GOAL_WEIGHT_LABEL not in line:
+            continue
+        match = _GOAL_WEIGHT_NUMBER.search(line)
+        if match is None:
+            # The label is there but the value is still `לבירור`.
+            continue
+        value = float(match.group())
+        if _PLAUSIBLE_WEIGHT[0] <= value <= _PLAUSIBLE_WEIGHT[1]:
+            return value
+    return None
 
 
 # --- Coach preferences -------------------------------------------------------
