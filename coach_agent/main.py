@@ -1,5 +1,6 @@
 import hmac
 import logging
+from io import BytesIO
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, PhotoSize, Update
 from telegram.error import TelegramError
@@ -95,6 +96,16 @@ async def _send(message, reply: AgentReply) -> None:
         reply.text,
         reply_markup=_APPROVAL_KEYBOARD if reply.awaiting_approval else None,
     )
+    # After the sentence and not before it: the text is what says why the file
+    # is coming, and a document arriving first is a file with no explanation.
+    #
+    # Sent as bytes rather than as a link to a hosted page. A link would be a
+    # capability URL that travels with any forward of the message, and it would
+    # put the trainee's health data on somebody else's disk; this way the file
+    # never leaves the conversation. `filename` is explicit because BytesIO has
+    # no name of its own, and Telegram would invent one.
+    for document in reply.documents:
+        await message.reply_document(document=BytesIO(document.data), filename=document.filename)
 
 
 def _reply_for(user_key: str, message: str | UserInput) -> AgentReply:

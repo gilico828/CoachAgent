@@ -1,0 +1,168 @@
+<!doctype html>
+<!--
+  One day of the food log. Filled by reports.render_food_day through
+  string.Template — every hole is a $name, never a {brace}, because the CSS
+  below is full of braces and str.format would choke on the first one.
+
+  Same rules as measurements.html: one file, no network, no script. The token
+  block is deliberately identical to that file's, so the two pages read as one
+  system; a color changed here has to be changed there too.
+-->
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>$title</title>
+<style>
+  :root {
+    --plane:   #f9f9f7;
+    --surface: #fcfcfb;
+    --ink:     #0b0b0b;
+    --ink-2:   #52514e;
+    --muted:   #898781;
+    --grid:    #e1e0d9;
+    --axis:    #c3c2b7;
+    --ring:    rgba(11, 11, 11, .10);
+    --protein: #2a78d6;
+    --carbs:   #eb6834;
+    --fat:     #1baf7a;
+  }
+  /* Selected for the dark surface, not flipped from the light one. */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --plane:   #0d0d0d;
+      --surface: #1a1a19;
+      --ink:     #ffffff;
+      --ink-2:   #c3c2b7;
+      --muted:   #898781;
+      --grid:    #2c2c2a;
+      --axis:    #383835;
+      --ring:    rgba(255, 255, 255, .10);
+      --protein: #3987e5;
+      --carbs:   #d95926;
+      --fat:     #199e70;
+    }
+  }
+
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", "Arial Hebrew", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .sheet {
+    max-width: 640px;
+    margin-inline: auto;
+    padding-inline: 16px;
+    padding-block: 28px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  /* --- masthead --- */
+  .masthead { display: flex; flex-direction: column; gap: 6px; }
+  .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .09em; color: var(--muted); }
+  h1 {
+    margin: 0;
+    font-family: "Frank Ruehl CLM", FrankRuehl, "Times New Roman", Georgia, serif;
+    font-weight: 700;
+    font-size: 30px;
+    line-height: 1.15;
+    text-wrap: balance;
+  }
+  .sub { font-size: 13.5px; color: var(--ink-2); }
+
+  /* --- the day's total --- */
+  .total {
+    background: var(--surface);
+    border: 1px solid var(--ring);
+    border-radius: 3px;
+    padding: 18px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .total-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .total-num { font-size: 46px; font-weight: 700; line-height: .95; letter-spacing: -.025em; }
+  .total-unit { font-size: 15px; font-weight: 600; color: var(--ink-2); }
+  .total-say { margin-inline-start: auto; font-size: 12.5px; color: var(--muted); }
+
+  /* 2px surface gaps, so two segments never read as one longer band. */
+  .bar { display: flex; gap: 2px; height: 9px; border-radius: 2px; overflow: hidden; background: var(--grid); }
+  .bar span { display: block; }
+
+  .macros { display: flex; gap: 18px; flex-wrap: wrap; }
+  .macro { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
+  .macro .swatch { flex: none; align-self: center; width: 9px; height: 9px; border-radius: 2px; }
+  .macro .mlabel { color: var(--ink-2); }
+  .macro .mval { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .macro .mpct { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* --- meals --- */
+  .meals { display: flex; flex-direction: column; gap: 2px; }
+  .meal {
+    background: var(--surface);
+    border: 1px solid var(--ring);
+    border-radius: 3px;
+    padding: 13px 14px 12px;
+  }
+  .meal-head {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    padding-bottom: 9px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--axis);
+  }
+  .meal-name { font-size: 15px; font-weight: 700; }
+  .meal-time { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .meal-sum {
+    margin-inline-start: auto;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .meal-sum small { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+
+  .item { display: flex; align-items: baseline; gap: 7px; padding: 5px 0; }
+  .item .g { font-size: 12.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* The dotted rule between a name and its number. flex-shrink keeps it from
+     pushing the number off a narrow screen when the name is long. */
+  .item .leader { flex: 1 1 14px; min-width: 14px; border-bottom: 1px dotted var(--axis); transform: translateY(-4px); }
+  .item .kcal { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* A missing figure is not a zero: log_meal stores blank when nothing was
+     looked up, and the page has to keep those two apart or the total lies. */
+  .item .kcal.none { font-weight: 400; color: var(--muted); }
+  .item .note { flex-basis: 100%; font-size: 12.5px; color: var(--muted); }
+
+  footer { font-size: 12px; line-height: 1.65; color: var(--muted); }
+  footer b { font-weight: 600; color: var(--ink-2); }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <header class="masthead">
+    <div class="eyebrow">יומן תזונה</div>
+    <h1>$title</h1>
+    <div class="sub">$sub_line</div>
+  </header>
+
+  $summary
+
+  <div class="meals">
+    $meals
+  </div>
+
+  <footer>$footnote</footer>
+
+</div>
+</body>
+</html>
